@@ -28,6 +28,9 @@ var _tree: SceneTree
 
 func run(tree: SceneTree) -> int:
 	_tree = tree
+	# The exported game starts this runner from _ready(), while the root still holds its child-setup lock.
+	# Enter the main loop before adding test scenes, so their viewport transforms and input paths are live too.
+	await _tree.process_frame
 	var code: int = await _run()
 	print("SMOKE %s" % ["PASS" if code == EXIT_PASS else ("SKIP" if code == EXIT_SKIP else "FAIL")])
 	return code
@@ -845,8 +848,8 @@ func _menu_player(fs: RefCounted) -> void:
 	# the viewer scene: the stub shell pushes Skirmish.apt for the Skirmish command (S-138); run as a separate headless Godot
 	var output: Array = []
 	# lane RELEASE-1: in an exported package (tools/release/test_export.sh) res:// is the pack next to the executable, which loads it again by itself
-	var project_args := ["--path", ProjectSettings.globalize_path("res://")] if FileAccess.file_exists("res://project.godot") else []
-	var code := OS.execute(OS.get_executable_path(), ["--headless"] + project_args + ["res://scenes/menu_viewer.tscn", "--", "--check", "--clicks=SoloPlayNav,SoloPlayNav.Skirmish"], output, true)
+	var project_args := ["--path", ProjectSettings.globalize_path("res://"), "res://scenes/menu_viewer.tscn", "--"] if OS.has_feature("editor") else ["--", "--menu-viewer-test"]
+	var code := OS.execute(OS.get_executable_path(), ["--headless"] + project_args + ["--check", "--clicks=SoloPlayNav,SoloPlayNav.Skirmish"], output, true)
 	var log := "\n".join(PackedStringArray(output))
 	_check(code == 0, "the menu viewer scene ran its scripted click-through (exit %d)" % code)
 	_check(log.contains("FSCOMMAND AptMainMenu::OnInitialized ()") and log.contains("FSCOMMAND AptMainMenu::Skirmish ()"), "the viewer logged the fscommands of the click-through")

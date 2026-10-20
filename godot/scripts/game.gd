@@ -635,6 +635,10 @@ var _cah_hero_id := ""          # lane CAH-1: the unique id of the hero the --ca
 
 
 func _ready() -> void:
+	# Export templates disable command-line scene overrides. The smoke test's child process enters its viewer through the main scene.
+	if OS.get_cmdline_user_args().has("--menu-viewer-test"):
+		get_tree().change_scene_to_file.call_deferred("res://scenes/menu_viewer.tscn")
+		return
 	if OS.get_cmdline_user_args().has("--smoke-test"):
 		process_mode = Node.PROCESS_MODE_DISABLED
 		if DisplayServer.get_name() != "headless":
