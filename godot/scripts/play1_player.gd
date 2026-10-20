@@ -8,6 +8,7 @@
 ##   powers    the Palantir's powers button opens SpellStore.apt; a click on a power that can be bought, RESET, a buy and ACCEPT; a click beside the
 ##             store closes it
 ##   camera    the wheel zooms out to the limit: retail's max height times the Max zoom-out (lane ZOOM-1), beyond it with --free-camera
+##   farm      camera response and a farm placed through viewport input; reports input-to-camera, button-to-ghost and click-to-site wall times
 ##   herobar   (lane UI-4) the Palantir's hero bar (InGameHeroSelect): the idle builder's button and, after a hero and a second hero are created, their buttons
 ##             with portrait, health and rank; a click on a hero button selects that hero, a second click moves the camera to it, a click on the builder button
 ##             selects the idle builder, select-all selects both heroes; play1-herobar-<step>.png
@@ -189,7 +190,9 @@ func _scenario_orders() -> String:
 		return "the left click on the unit selected nothing"
 	# an empty piece of ground beside the unit (a click on one of the player's other units would be a selection, not an order)
 	var target := Vector2(-1, -1)
-	for off in [Vector2(220, 60), Vector2(-220, 60), Vector2(200, -80), Vector2(-200, -80), Vector2(300, 140), Vector2(-300, 140)]:
+	# The probes are authored for 1280 pixels; keep their world-space reach on a Retina viewport too.
+	for logical_offset in [Vector2(220, 60), Vector2(-220, 60), Vector2(200, -80), Vector2(-200, -80), Vector2(300, 140), Vector2(-300, 140)]:
+		var off: Vector2 = logical_offset * window_size().x / 1280.0
 		var w: Vector2 = hud.pixel_to_world(up + off)
 		var clear := w.x > -1.0e8
 		for o in world.get_player_objects(game._local_name):
@@ -2182,6 +2185,93 @@ func look_by_radar(p: Vector2) -> void:
 	if rp.x >= 0:
 		await click(rp)
 		await game._wait_seconds(0.8)
+
+
+## The reported camera / farm response, driven by viewport input; times are observations, not machine-specific pass thresholds.
+func _scenario_farm() -> String:
+	var worker: Dictionary = {}
+	for o in own_objects():
+		if not o.structure and str(o.template).contains("Porter"):
+			worker = o
+			break
+	if worker.is_empty():
+		return "no builder"
+	await look_by_radar(Vector2(worker.x, worker.y))
+	await move_to(window_size() * 0.5)
+	var camera_before: Vector2 = hud.get_camera().position
+	var key := InputEventKey.new()
+	key.physical_keycode = KEY_LEFT
+	key.keycode = KEY_LEFT
+	key.pressed = true
+	var camera_start := Time.get_ticks_msec()
+	_vp().push_input(key)
+	while hud.get_camera().position == camera_before and Time.get_ticks_msec() - camera_start < 5000:
+		await game.get_tree().process_frame
+	var camera_ms := Time.get_ticks_msec() - camera_start
+	key = key.duplicate()
+	key.pressed = false
+	_vp().push_input(key)
+	if hud.get_camera().position == camera_before:
+		return "the camera did not respond to the arrow key"
+	await look_by_radar(Vector2(worker.x, worker.y))
+	if not await select_object(worker):
+		return "the builder could not be selected by input"
+	var farm: Dictionary = {}
+	for b in hud.get_command_buttons():
+		if b.command == "DOZER_CONSTRUCT" and str(b.template).contains("Farm"):
+			farm = b
+			break
+	if farm.is_empty():
+		return "this faction has no farm command"
+	await move_to(palantir_button(farm.frame))
+	var button_start := Time.get_ticks_msec()
+	press(palantir_button(farm.frame), MOUSE_BUTTON_LEFT, true)
+	await game.get_tree().process_frame
+	press(palantir_button(farm.frame), MOUSE_BUTTON_LEFT, false)
+	while not hud.get_placement().get("placing", false) and Time.get_ticks_msec() - button_start < 5000:
+		await game.get_tree().process_frame
+	var ghost_ms := Time.get_ticks_msec() - button_start
+	if not hud.get_placement().get("placing", false):
+		return "the farm button did not start placement"
+	var site := Vector2(-1, -1)
+	for ring in range(2, 9):
+		for n in 12:
+			var p := Vector2(worker.x, worker.y) + Vector2.from_angle(TAU * n / 12.0) * 70.0 * ring
+			var pixel := to_pixel(p.x, p.y)
+			if not on_screen(pixel):
+				continue
+			await move_to(pixel)
+			await game._step(2)
+			if int(hud.get_placement().get("legal", -1)) == 0:
+				site = pixel
+				break
+		if site.x >= 0:
+			break
+	if site.x < 0:
+		return "no legal farm site on screen"
+	var before: Array = own_objects().map(func(o): return o.id)
+	var placed := Time.get_ticks_msec()
+	press(site, MOUSE_BUTTON_LEFT, true)
+	await game.get_tree().process_frame
+	press(site, MOUSE_BUTTON_LEFT, false)
+	var building: Dictionary = {}
+	while building.is_empty() and Time.get_ticks_msec() - placed < 10000:
+		await game.get_tree().process_frame
+		if world.is_logic_held():
+			for o in own_objects():
+				if o.template == farm.template and not before.has(o.id):
+					building = o
+	var site_ms := Time.get_ticks_msec() - placed
+	print("PLAY1 farm latency: camera %d ms, build button %d ms, site %d ms" % [camera_ms, ghost_ms, site_ms])
+	if building.is_empty():
+		return "the farm site did not appear"
+	for attempt in 120:
+		await game._wait_seconds(1.0)
+		building = world.get_object(building.id)
+		if not building.get("under_construction", true):
+			shot("farm-complete")
+			return ""
+	return "the builder did not finish the farm"
 
 
 ## the whole skirmish by the player's input: a worker builds a barracks (the Palantir's button, the site by a left click), the barracks trains, the
