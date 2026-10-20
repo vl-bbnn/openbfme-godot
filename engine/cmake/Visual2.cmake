@@ -5,4 +5,5 @@ set(OPENBFME_VISUAL2_SOURCES
 )
 set(OPENBFME_VISUAL2_TESTS
     tests/test_visual2.cpp
+    tests/test_tree_sway_loop.cpp
 )
