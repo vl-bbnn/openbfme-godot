@@ -338,12 +338,17 @@ func view_options(values: Dictionary) -> Dictionary:
 	var all_bars: bool = values.AllHealthBars == "yes"
 	if _detail.get("ok", false) and not _detail.get("decals", true):
 		all_bars = true # RW 0x601CD3: DecalLOD Off shows them all
+	var alternate: bool = values.AlternateMouseSetup != "yes"
+	if game != null and (not game._mouse_override.is_empty() or game._qa):
+		# Keep the session's mouse mode when game_started / a later options refresh applies the saved file.
+		# Otherwise the QA player (left-click orders) starts issuing move orders with its deselect clicks.
+		alternate = game._alternate_mouse_setup()
 	return {
 		"scroll_factor_option": values.ScrollFactor if not values.ScrollFactor.is_empty() else null,
 		"edge_scroll_mode": values.OpenBFMEEdgeScroll,
 		"invert_drag_scroll": values.OpenBFMEInvertDragScroll == "yes",
 		"rotate_speed_scale": values.OpenBFMERotateSpeed.to_int() / 100.0,
-		"alternate_mouse": values.AlternateMouseSetup != "yes",
+		"alternate_mouse": alternate,
 		"all_health_bars": all_bars,
 		"health_bar_mode": values.OpenBFMEHealthBars,
 		"ui_scale": values.OpenBFMEUIScale.to_int() / 100.0,
