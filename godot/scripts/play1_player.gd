@@ -139,7 +139,9 @@ func window_size() -> Vector2:
 func local_units() -> Array:
 	var out: Array = []
 	for o in world.get_player_objects(game._local_name):
-		if not o.structure:
+		# Map markers can belong to the local player too. Use the HUD's selection
+		# predicate exposed by get_object, rather than treating every non-building as a unit.
+		if not o.structure and world.get_object(o.id).selectable:
 			out.append(o)
 	return out
 
@@ -186,8 +188,8 @@ func _scenario_orders() -> String:
 	await game._step(20)
 	var sel: Array = hud.get_selection()
 	print("PLAY1 orders: selection after the left click: ", sel)
-	if sel.is_empty():
-		return "the left click on the unit selected nothing"
+	if not sel.has(unit.id):
+		return "the left click did not select the intended unit %d (selection %s)" % [unit.id, str(sel)]
 	# an empty piece of ground beside the unit (a click on one of the player's other units would be a selection, not an order)
 	var target := Vector2(-1, -1)
 	# The probes are authored for 1280 pixels; keep their world-space reach on a Retina viewport too.
