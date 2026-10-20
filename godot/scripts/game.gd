@@ -125,7 +125,7 @@
 ##     --onlineux1-game      (with --auto, lane ONLINEUX-1 r2) scripts/onlineux1_check.gd: an online game given up by a failed rejoin, with Esc / Options open
 ##     --opts6-game          (with --auto) the quit menu's Options over a live game: modal (nothing behind takes a click or a key, no world decoration over it)
 ##     --opts2-shots=DIR     (with --opts2-check) opts2-<tab>-<w>x<h>.png and the Options.apt pages (the proof screenshots; a window, not --headless)
-##     --opponents=<n>       (lane PERF-1, with --auto) slots 1..n are computers of level --ai (default 1; a 4-player map takes 3)
+##     --opponents=<n>       (lane PERF-1, with --auto) slots 1..n are computers of level --ai (default 1; 0 closes every other slot for a sandbox)
 ##     --warp=<seconds>      (lane PERF-1, with --auto) run the game at --warp-scale (default 8) times speed until this much game time has passed, then at normal speed
 ##                           for --advance seconds (the frame rate of a late game: GAME PERF restarts when the warp ends)
 ##   lane QA-1, the scripted player (scripts/qa_player.gd; tools/qa/qa_matrix.py runs the matrix):
@@ -835,7 +835,7 @@ func _ready() -> void:
 		elif arg.begins_with("--ai="):
 			_ai = int(arg.substr(5))
 		elif arg.begins_with("--opponents="):
-			_opponents = clampi(int(arg.substr(12)), 1, 7)
+			_opponents = clampi(int(arg.substr(12)), 0, 7)
 		elif arg.begins_with("--warp="):
 			_warp = float(arg.substr(7))
 		elif arg.begins_with("--warp-scale="):
@@ -3171,6 +3171,11 @@ func _auto_lobby_and_start() -> bool:
 		slots[0]["hero"] = _cah_hero_id # lane CAH-1: the Hero combo
 	for i in range(1, _opponents + 1):
 		slots.append({"slot": i, "state": _ai})
+	if _opponents == 0:
+		# A saved Skirmish.ini can keep AI slots open. Close them through the lobby's
+		# own combos; its existing retail start check decides the sandbox mode.
+		for i in range(1, 8):
+			slots.append({"slot": i, "state": 1}) # SLOT_CLOSED (GameInfo.h)
 	for i in range(mini(_teams.size(), slots.size())): # lane QA-1: --teams
 		slots[i]["team"] = int(_teams[i])
 	var spec := {
@@ -3266,6 +3271,7 @@ func _auto_lobby_and_start() -> bool:
 		print("GAME lobby: handicaps %s" % str((st.get("slots", []) as Array).map(func(x): return x.get("handicap"))))
 		_save_named("lobby-handicap")
 	_save_screenshot("lobby")
+	print("GAME auto lobby: ", JSON.stringify(_shell.lobby_state()))
 	var skirmish_level: int = _shell.shell_top_level()
 	# the Start button: RotWK's lobby (lobby.StartGame), the BFME2-style lobby (lobby.bottomNav.StartGame), BFME1's Skirmish.apt (bottomNav.StartGame)
 	var start := ""
