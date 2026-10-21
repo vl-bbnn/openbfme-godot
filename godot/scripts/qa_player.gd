@@ -8,8 +8,9 @@
 ## tools/qa/qa_matrix.py runs the matrix of factions x maps x AI levels and ranks the issues (workspace/rebuild/QA-1.md).
 ##
 ## Lane QA-2 adds invariants watched on every player's units through the whole game (played or idle), the feedback items' symptoms measured on the
-## logic's state (workspace/rebuild/QA-2.md): a unit standing still with the MOVING model condition for 3 probes (the "treadmill", community feedback
-## G1: the run animation plays in place) and a unit the AI calls moving that has not moved for 30 s of game time (stuck: lost infantry, F4 / G2).
+## logic's sampled state (workspace/rebuild/QA-2.md): three low-displacement position pairs with MOVING at their endpoints (the "treadmill" proxy for
+## community G1), or repeated low-displacement pairs while the AI reports moving (stuck proxy, F4 / G2). Intermediate motion and the displayed animation
+## are unobserved here; confirm either symptom with a dense trace before diagnosing continuous immobility or a visible run cycle.
 extends Node
 
 const DIK_Q := 0x10
@@ -60,9 +61,9 @@ var _victory := false
 var _defeat := false
 # lane QA-2: the motion invariants (_probe_motion)
 const MOTION_PROBE_FRAMES := 10       # logic frames between two probes
-const MOTION_STILL := 0.25            # a unit that moved less than this between two probes stands still
-const TREADMILL_PROBES := 3           # still with MOVING in this many probes in a row: the run animation plays in place
-const STUCK_FRAMES := 150             # 30 s of game time: the AI says moving, the unit stands still
+const MOTION_STILL := 0.25            # endpoint displacement below this is a sampled still pair
+const TREADMILL_PROBES := 3           # low-displacement endpoint pairs with MOVING; a proxy, not a sampled animation
+const STUCK_FRAMES := 150             # span between sampled still pairs while the AI reports moving
 const MOTION_DETAIL_CHECKS := 120     # get_object calls per probe at most (the still units, round robin)
 var _motion_players := []
 var _motion_last := {}     # id -> [frame, position]
@@ -226,10 +227,10 @@ func _probe_motion() -> void:
 				if melee:
 					count("treadmill_melee_units")
 				count("treadmill_units")
-				# which AI state leaves the flag on (idle = a stale MOVING; a move state = blocked while walking; attacking)
+				# Record the sampled AI state; the cause needs a dense motion/draw trace.
 				count("treadmill_ai_state_%d%s" % [int(full.get("ai_state", -1)), "_attacking" if conditions.has("ATTACKING") else ""])
-				issue("treadmill", o.template, "stands still for %d logic frames with MOVING set (conditions %s, AI state %d, AI moving %s%s)" % [
-					(TREADMILL_PROBES) * MOTION_PROBE_FRAMES, str(conditions), int(full.get("ai_state", -1)), str(full.get("moving", false)), ", its horde in a melee" if melee else ""])
+				issue("treadmill", o.template, "%d qualifying sampled position pairs displaced less than %s world units, with MOVING at each endpoint (nominal probe stride %d logic frames; intermediate motion and displayed animation unobserved; conditions %s, AI state %d, AI moving %s%s)" % [
+					TREADMILL_PROBES, str(MOTION_STILL), MOTION_PROBE_FRAMES, str(conditions), int(full.get("ai_state", -1)), str(full.get("moving", false)), ", its horde in a melee" if melee else ""])
 		else:
 			_treadmill.erase(o.id)
 		if full.get("moving", false):
@@ -244,7 +245,7 @@ func _probe_motion() -> void:
 					_stuck_samples.append({"frame": f, "player": o.player, "template": o.template, "x": snappedf(o.x, 1.0), "y": snappedf(o.y, 1.0),
 						"ai_state": int(full.get("ai_state", -1)), "conditions": conditions, "near": near})
 					print("QA stuck sample: %s" % JSON.stringify(_stuck_samples[-1]))
-				issue("stuck_moving", o.template, "the AI says moving, the unit stood still at (%.0f, %.0f) for %d logic frames (AI state %d, conditions %s)" % [
+				issue("stuck_moving", o.template, "the AI reports moving at low-displacement position probes near (%.0f, %.0f), spanning %d logic frames since the first still pair (intermediate motion unobserved; AI state %d, conditions %s)" % [
 					o.x, o.y, f - int(_stuck_since[o.id]), int(full.get("ai_state", -1)), str(conditions)])
 		else:
 			_stuck_since.erase(o.id)
