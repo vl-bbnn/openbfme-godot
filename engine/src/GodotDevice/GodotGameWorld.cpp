@@ -296,6 +296,7 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("find_object_by_template", "template_name"), &GameWorld::find_object_by_template);
 	ClassDB::bind_method(D_METHOD("get_template_model", "template_name"), &GameWorld::get_template_model);
 	ClassDB::bind_method(D_METHOD("get_placement_ghost", "template_name"), &GameWorld::get_placement_ghost);
+	ClassDB::bind_method(D_METHOD("prepare_initial_preview"), &GameWorld::prepare_initial_preview);
 	ClassDB::bind_method(D_METHOD("create_object", "template_name", "player", "x", "y", "angle"), &GameWorld::create_object, DEFVAL(0.0));
 	ClassDB::bind_method(D_METHOD("get_ground_height", "x", "y"), &GameWorld::get_ground_height);
 	ClassDB::bind_method(D_METHOD("queue_unit", "player", "producer", "template_name", "secondary"), &GameWorld::queue_unit, DEFVAL(false));
@@ -2967,6 +2968,81 @@ Dictionary GameWorld::get_placement_ghost(const String &template_name) const
 		b["texture_code9"] = String(PlacementGhost::bibTextureFor(9));
 		out["bib"] = b;
 	}
+	return out;
+}
+
+Dictionary GameWorld::prepare_initial_preview()
+{
+	Dictionary out;
+	Array errors;
+	out["ok"] = false;
+	out["errors"] = errors;
+	if (!m_game || !m_world || m_autoAdvance)
+	{
+		errors.push_back("prepare_initial_preview requires a loaded, non-advancing game");
+		return out;
+	}
+	const auto context = m_world->enterContext();
+	const int64_t frame = get_frame(), hash = get_state_hash();
+	out["frame_before"] = frame;
+	out["hash_before"] = hash;
+	const ::Player *local = m_game->players().getLocalPlayer();
+	for (::Object *o = m_game->logic().getFirstObject(); local && o; o = o->getNextObject())
+	{
+		if (o->getControllingPlayer() != local || !o->isKindOfName("DOZER") || o->isEffectivelyDead() || o->isDestroyed()) continue;
+		const CommandSet *set = m_world->commands().findCommandSet(o->getCommandSetName());
+		if (!set)
+		{
+			errors.push_back(toGodot("preview: missing builder command set " + o->getCommandSetName()));
+			return out;
+		}
+		for (int slot = 0; slot < CommandSet::MAX_BUTTONS; ++slot)
+		{
+			const CommandButton *button = set->getCommandButton(slot);
+			if (!button || button->m_command != GUI_COMMAND_DOZER_CONSTRUCT) continue;
+			const ThingTemplate *tt = button->getThingTemplate();
+			if (!tt)
+			{
+				errors.push_back("preview: construction command has no thing template");
+				return out;
+			}
+			const PlacementGhost::Look look = PlacementGhost::lookOf(*tt);
+			if (look.model.empty())
+			{
+				errors.push_back(toGodot("preview: no placement model for " + tt->getName()));
+				return out;
+			}
+			W3DInstancer *inst = memnew(W3DInstancer);
+			inst->set_name("PreparedPlacementPreview");
+			inst->set_visible(false);
+			add_child(inst); // clear_scene owns it even when preparation fails
+			const Dictionary setup = inst->setup(m_fs);
+			const Array setupErrors = setup.get("errors", Array());
+			for (int64_t i = 0; i < setupErrors.size(); ++i) errors.push_back(setupErrors[i]);
+			inst->set_house_colors_enabled(true);
+			inst->set_alpha_override(true);
+			inst->set_auto_update(false);
+			inst->set_playing(false);
+			const int64_t model = inst->add_model(toGodot(look.model));
+			const int64_t instance = model < 0 ? -1 : inst->add_instance(model, Transform3D(), String(), 0.0, 0.0);
+			if (instance < 0) errors.push_back(toGodot("preview: model could not be instanced: " + look.model));
+			else
+			{
+				inst->set_instance_opacity(instance, 0.45); // existing placement opacity; presentation only
+				inst->update_now();
+			}
+			for (const String &e : inst->get_errors()) errors.push_back(e);
+			out["node"] = inst;
+			out["template"] = toGodot(tt->getName());
+			out["model"] = toGodot(look.model);
+			out["frame_after"] = get_frame();
+			out["hash_after"] = get_state_hash();
+			if (get_frame() != frame || get_state_hash() != hash) errors.push_back("preview preparation changed simulation state");
+			out["ok"] = errors.is_empty();
+			return out;
+		}
+	}
+	errors.push_back("preview: no initial builder construction command");
 	return out;
 }
 

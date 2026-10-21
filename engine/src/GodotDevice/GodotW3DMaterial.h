@@ -69,10 +69,11 @@ struct W3DMaterialResult
 };
 
 // Builds materials and caches shaders and textures. Textures are read through the mounted archives.
+struct W3DShaderPool;
 class W3DMaterialFactory
 {
 public:
-	explicit W3DMaterialFactory(ArchiveFileSystem &fs) : Fs(fs) {}
+	explicit W3DMaterialFactory(ArchiveFileSystem &fs);
 
 	// Stop S-119 (lane MAPOBJ-1): with a housecolor.ini table set, a classic surface whose stage 0 texture has a house colour texture gets
 	// the HouseColor shader permutation and that texture as `w3d_hc_tex` (the table must outlive the factory). Off (nullptr) by default.
@@ -120,6 +121,7 @@ private:
 	HouseColorParams HouseParams;
 	std::vector<std::pair<std::string, std::string>> TextureSwaps; // stop S-5015
 	bool AlphaOverride = false;
+	std::shared_ptr<W3DShaderPool> SharedShaders;
 	std::map<std::string, Ref<Shader>> Shaders;
 	std::map<std::string, Ref<Texture2D>> Textures; // by virtual path
 	std::map<std::string, std::string> PackedHouseTextureNotes; // retain S-1482 on cache hits

@@ -196,6 +196,9 @@ public:
 	// lane PLAY-1: { model, state, hidden: [sub object names], shown: [...], unread: [script lines] } of the template's BUILD_PLACEMENT_CURSOR look (the ghost);
 	// lane PLAY-3: a castle also gives castle = true, base, castle_error and pieces: [{ template, model, hidden, x, y, z, angle }] (PlacementGhost::castleLookOf)
 	Dictionary get_placement_ghost(const String &template_name) const;
+	// Opt-in device experiment: the first initial builder command's actual placement model,
+	// with no logic objects, orders or RNG. The caller renders it before entering the game.
+	Dictionary prepare_initial_preview();
 
 	// ---- lane PROD-1: production by player command ----
 	// makes an object of `template_name` for the player with index `player` (PlayerList order) at map position (x, y), ground height from the terrain;

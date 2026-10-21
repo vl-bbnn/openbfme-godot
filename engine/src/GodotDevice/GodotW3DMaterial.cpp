@@ -27,6 +27,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
+#include <cstdint>
 
 namespace godot
 {
@@ -222,6 +224,30 @@ void W3D_Apply_Viewer_Lighting()
 	setSet("inf", v);
 }
 
+// A render-thread-only pool. Factories own its lifetime; the static weak handle
+// cannot retain Godot resources past the last factory or across engine shutdown.
+// Exact source equality also covers generator fields that the permutation ID may
+// distinguish even when they do not change the generated shader.
+struct W3DShaderPool
+{
+	std::map<std::string, Ref<Shader>> BySource;
+};
+
+W3DMaterialFactory::W3DMaterialFactory(ArchiveFileSystem &fs) : Fs(fs)
+{
+	static const bool shared = [] { const char *value = std::getenv("OPENBFME_SHARED_SHADERS"); return value && std::strcmp(value, "1") == 0; }();
+	if (shared)
+	{
+		static std::weak_ptr<W3DShaderPool> pool;
+		SharedShaders = pool.lock();
+		if (!SharedShaders)
+		{
+			SharedShaders = std::make_shared<W3DShaderPool>();
+			pool = SharedShaders;
+		}
+	}
+}
+
 Ref<Shader> W3DMaterialFactory::Get_Shader(const W3DShaderKey &key)
 {
 	const W3DSamplerPolicy samplers = samplerPolicy();
@@ -232,9 +258,30 @@ Ref<Shader> W3DMaterialFactory::Get_Shader(const W3DShaderKey &key)
 		return it->second;
 	}
 	W3D_Ensure_Light_Globals(); // the shader names the light globals: they must exist before it compiles
+	const std::string source = Generate_W3D_Shader_Code(key, samplers);
 	Ref<Shader> shader;
-	shader.instantiate();
-	shader->set_code(toGodot(Generate_W3D_Shader_Code(key, samplers)));
+	if (SharedShaders)
+	{
+		auto existing = SharedShaders->BySource.find(source);
+		if (existing != SharedShaders->BySource.end()) shader = existing->second;
+	}
+	const bool reused = shader.is_valid();
+	if (!reused)
+	{
+		shader.instantiate();
+		shader->set_code(toGodot(source));
+		if (SharedShaders) SharedShaders->BySource.emplace(source, shader);
+	}
+	// Opt-in resource identity audit: equal generated code need not mean an equal
+	// Godot Shader RID. Keep hashing and logging out of ordinary shader creation.
+	static const bool audit = [] { const char *value = std::getenv("OPENBFME_SHADER_AUDIT"); return value && std::strcmp(value, "1") == 0; }();
+	if (audit)
+	{
+		const String code = toGodot(source);
+		UtilityFunctions::print("W3D_SHADER_AUDIT factory=", (int64_t)(uintptr_t)this,
+			" key=", toGodot(id), " sha256=", code.sha256_text(),
+			" rid=", (int64_t)shader->get_rid().get_id(), " bytes=", (int64_t)source.size(), " reused=", reused);
+	}
 	Shaders[id] = shader;
 	return shader;
 }

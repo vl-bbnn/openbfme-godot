@@ -1972,6 +1972,54 @@ func _begin_game(message: Dictionary) -> void:
 			print("  load error: ", e)
 		_fail("start_new_game failed")
 		return
+	if OS.get_cmdline_user_args().has("--prepare-preview-pipeline"):
+		if OS.get_environment("OPENBFME_SHARED_SHADERS") != "1":
+			_fail("preview preparation requires the opt-in shared shader pool")
+			return
+		_world.set_auto_advance(false)
+		var preview_started := Time.get_ticks_msec()
+		var preview_frame: int = _world.get_frame()
+		var preview_hash: int = _world.get_state_hash()
+		var prepared: Dictionary = _world.prepare_initial_preview()
+		if not prepared.ok:
+			_fail("preview preparation: " + JSON.stringify(prepared))
+			return
+		var preview_node: Node3D = prepared.node
+		prepared.erase("node")
+		var probe := SubViewport.new()
+		probe.name = "PreviewPipelineProbe"
+		# Pipeline keys use attachment formats, not pixel dimensions. Keep the
+		# camera aspect while avoiding a second full-resolution color/depth buffer.
+		var preview_area := get_viewport().get_visible_rect().size
+		var preview_scale := 64.0 / maxf(preview_area.x, preview_area.y)
+		probe.size = Vector2i(maxi(1, roundi(preview_area.x * preview_scale)), maxi(1, roundi(preview_area.y * preview_scale)))
+		probe.own_world_3d = true
+		probe.msaa_3d = get_viewport().msaa_3d
+		probe.render_target_update_mode = SubViewport.UPDATE_ONCE
+		add_child(probe)
+		preview_node.reparent(probe)
+		var camera := Camera3D.new()
+		probe.add_child(camera)
+		camera.position = Vector3(200, 180, 200)
+		camera.look_at(Vector3.ZERO)
+		camera.current = true
+		preview_node.visible = true
+		RenderingServer.force_sync()
+		RenderingServer.force_draw(false, 0.0)
+		RenderingServer.force_sync()
+		prepared["ready_us"] = Time.get_ticks_usec()
+		prepared["total_ms"] = Time.get_ticks_msec() - preview_started
+		prepared["frame_after_draw"] = _world.get_frame()
+		prepared["hash_after_draw"] = _world.get_state_hash()
+		prepared["simulation_unchanged"] = preview_frame == int(prepared.frame_after_draw) and preview_hash == int(prepared.hash_after_draw)
+		prepared["video_bytes"] = int(Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED))
+		print("GAME PREVIEW PIPELINE READY ", JSON.stringify(prepared))
+		# The ordinary scene's factories retain the shared Shader. The temporary
+		# viewport and meshes can leave after submission; no game objects were made.
+		probe.queue_free()
+		if not prepared.simulation_unchanged:
+			_fail("preview preparation changed simulation state")
+			return
 	_enter_game(rep)
 	if _online_spectate:
 		for arg in OS.get_cmdline_user_args():
