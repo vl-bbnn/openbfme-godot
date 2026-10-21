@@ -737,6 +737,91 @@ TEST_CASE("render list: a clip layer emits MaskBegin, the mask shape, MaskConten
 	CHECK(rl.unverified == std::vector<std::string>{ "clip-layer" });
 }
 
+TEST_CASE("native placeholder query: render order, composed bounds and live mutations match the full renderer")
+{
+	TestMovie m;
+	m.addCharacter(0);
+	const auto shape = m.addCharacter(m.addShape(-2, -3, 10, 20, 1));
+	const auto radar = m.addCharacter(m.addSprite({ { m.addPlaceItem(placeChar(shape, 1, "art")) } }));
+	auto inner = placeChar(radar, 1, "r");
+	inner.flags |= APT_PLACE_HASMATRIX;
+	inner.translation[0] = 5;
+	inner.translation[1] = 6;
+	const auto wrapper = m.addCharacter(m.addSprite({ { m.addPlaceItem(inner) } }));
+	auto a = placeChar(wrapper, 1, "a");
+	a.flags |= APT_PLACE_HASMATRIX | APT_PLACE_HASCLIPDEPTH;
+	a.clipDepth = 2;
+	a.matrix[0] = 2;
+	a.matrix[3] = 3;
+	a.translation[0] = 100;
+	a.translation[1] = 200;
+	// File order differs from depth order; both levels contain matching tags.
+	m.setRootFrames({ { m.addPlaceItem(placeChar(wrapper, 2, "b")), m.addPlaceItem(a) } });
+	PlayerFx fx;
+	addShapeFile(fx, "Query", 1);
+	REQUIRE(fx.load(3, "Query", m));
+	REQUIRE(fx.load(1, "Query", m));
+	for (int level : { 1, 3 })
+	{
+		for (const char *path : { "a.r", "b.r" })
+		{
+			auto *r = fx.at(path, level);
+			REQUIRE(r);
+			r->setMember("_type", AptValue::string("TestRadar"));
+			r->setMember("_RenderObj", AptValue::string("Preview"));
+		}
+	}
+	auto check = [&](const std::string &path) {
+		AptRenderCommand found;
+		REQUIRE(fx.apt->findNativePlaceholder("TestRadar", found));
+		CHECK(found.path == path);
+		AptRenderList full;
+		fx.apt->buildRenderList(full);
+		const AptRenderCommand *expected = nullptr;
+		for (const auto &c : full.commands)
+		{
+			if (c.nativeTag && c.symbolName == "TestRadar")
+			{
+				expected = &c;
+				break;
+			}
+		}
+		REQUIRE(expected);
+		CHECK(found.kind == expected->kind);
+		CHECK(found.level == expected->level);
+		CHECK(found.path == expected->path);
+		CHECK(found.symbolName == expected->symbolName);
+		CHECK(found.renderObject == "Preview");
+		CHECK(found.matrix.a == expected->matrix.a);
+		CHECK(found.matrix.b == expected->matrix.b);
+		CHECK(found.matrix.c == expected->matrix.c);
+		CHECK(found.matrix.d == expected->matrix.d);
+		CHECK(found.matrix.tx == expected->matrix.tx);
+		CHECK(found.matrix.ty == expected->matrix.ty);
+		for (int i = 0; i < 4; ++i)
+		{
+			CHECK(found.bounds[i] == expected->bounds[i]);
+			CHECK(found.color.mul[i] == expected->color.mul[i]);
+			CHECK(found.color.add[i] == expected->color.add[i]);
+		}
+		return found;
+	};
+	const auto first = check("_level1.a.r");
+	CHECK(first.matrix.tx == 110);
+	CHECK(first.matrix.ty == 218);
+	CHECK(first.bounds[0] == -2);
+	CHECK(first.bounds[3] == 20);
+	fx.at("a", 1)->matrix.tx = 300;
+	CHECK(check("_level1.a.r").matrix.tx == 310);
+	fx.at("a", 1)->visible = false;
+	check("_level1.b.r");
+	fx.at("b", 1)->setMember("_type", AptValue::string("OtherComponent"));
+	check("_level3.a.r"); // a nonmatching component shields its tagged descendants
+	fx.root(3)->visible = false;
+	AptRenderCommand missing;
+	CHECK_FALSE(fx.apt->findNativePlaceholder("TestRadar", missing));
+}
+
 namespace
 {
 class ComponentHost : public AptStubHost
@@ -782,6 +867,9 @@ TEST_CASE("render list: an instance of a symbol the host calls a component is on
 	CHECK(c.matrix.tx == doctest::Approx(7.0f));
 	CHECK(c.bounds[2] == doctest::Approx(40.0f));
 	CHECK(c.bounds[3] == doctest::Approx(20.0f));
+	// An exported component's symbol name is not a script tag (nativeTag=false).
+	AptRenderCommand found;
+	CHECK_FALSE(apt.findNativePlaceholder("Gadget", found));
 }
 
 TEST_CASE("render list: a text field bound to a variable shows the variable's value; its font comes from the font character")

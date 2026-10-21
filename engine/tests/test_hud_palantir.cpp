@@ -83,6 +83,51 @@ TEST_CASE("hud palantir: the movie starts, answers OnInitialized and shows money
 	CHECK(cp->find('/') != std::string::npos);
 }
 
+TEST_CASE("hud radar query: the animated retail HUD returns the same component as its full render list")
+{
+	if (!haveWorld("hud radar query"))
+	{
+		return;
+	}
+	HudRig h(shared());
+	int matched = 0;
+	for (int frame = 0; frame < 90; ++frame)
+	{
+		h.frames(1);
+		AptRenderList full;
+		h.hud->apt().buildRenderList(full);
+		const AptRenderCommand *expected = nullptr;
+		for (const auto &c : full.commands)
+		{
+			if (c.kind == AptRenderCommand::Kind::Placeholder && c.nativeTag && c.symbolName == "AptPalantir::RenderRadar")
+			{
+				expected = &c;
+				break;
+			}
+		}
+		AptRenderCommand found;
+		CHECK(h.hud->apt().findNativePlaceholder("AptPalantir::RenderRadar", found) == (expected != nullptr));
+		if (expected)
+		{
+			++matched;
+			CHECK(found.path == expected->path);
+			CHECK(found.level == expected->level);
+			CHECK(found.matrix.a == expected->matrix.a);
+			CHECK(found.matrix.b == expected->matrix.b);
+			CHECK(found.matrix.c == expected->matrix.c);
+			CHECK(found.matrix.d == expected->matrix.d);
+			CHECK(found.matrix.tx == expected->matrix.tx);
+			CHECK(found.matrix.ty == expected->matrix.ty);
+			for (int i = 0; i < 4; ++i)
+			{
+				CHECK(found.bounds[i] == expected->bounds[i]);
+			}
+		}
+	}
+	// tolerance: the authored opening animation need not expose the radar on every one of these 90 frames.
+	CHECK(matched > 0);
+}
+
 TEST_CASE("hud palantir: a selected building fills the command arc with its CommandSet and the buttons carry image, cost and state")
 {
 	if (!haveWorld("hud palantir arc"))

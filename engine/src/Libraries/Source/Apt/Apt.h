@@ -33,6 +33,7 @@
 
 class AptInput;
 class AptRenderList;
+struct AptRenderCommand;
 
 // One action pool entry (EA 0x18-byte records, AptAnimation.cpp).
 struct AptAction
@@ -189,8 +190,12 @@ public:
 
 	// Rendering (AptRenderList.h)
 	void buildRenderList(AptRenderList &out);
+	// The first script-tagged placeholder in render order, at the current display-list state.
+	// Shares the renderer's traversal but does not prepare unrelated shapes, text or masks.
+	bool findNativePlaceholder(const std::string &tag, AptRenderCommand &out);
 
 private:
+	void buildRenderListImpl(AptRenderList &out, const std::string *nativeTag);
 	friend class AptPlayerHost;
 	friend class AptCharacterInst;
 	friend class AptSpriteInst;

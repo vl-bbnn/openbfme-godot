@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <set>
+#include <utility>
 
 std::size_t AptRenderList::count(AptRenderCommand::Kind kind) const
 {
@@ -102,20 +103,40 @@ const AptImageMapEntry *Apt::importedImage(const AptFile &importer, std::uint32_
 
 void Apt::buildRenderList(AptRenderList &out)
 {
+	buildRenderListImpl(out, nullptr);
+}
+
+bool Apt::findNativePlaceholder(const std::string &tag, AptRenderCommand &out)
+{
+	AptRenderList list;
+	buildRenderListImpl(list, &tag);
+	if (list.commands.empty())
+	{
+		return false;
+	}
+	out = std::move(list.commands.front());
+	return true;
+}
+
+void Apt::buildRenderListImpl(AptRenderList &out, const std::string *nativeTag)
+{
 	out.commands.clear();
 	out.errors.clear();
 	out.unverified.clear();
 	std::set<std::string> unverified;
 	std::function<void(AptCharacterInst *, const AptMatrix &, const AptColorTransform &, int)> emit;
 	emit = [&](AptCharacterInst *inst, const AptMatrix &parentM, const AptColorTransform &parentC, int level) {
-		if (!inst || !inst->defined() || !inst->visible)
+		if (!inst || !inst->defined() || !inst->visible || (nativeTag && !out.commands.empty()))
 		{
 			return;
 		}
 		const AptMatrix M = parentM.concat(inst->matrix);
 		const AptColorTransform C = parentC.concat(inst->color);
 		AptRenderCommand base;
-		base.path = inst->targetPath();
+		if (!nativeTag)
+		{
+			base.path = inst->targetPath();
+		}
 		base.level = level;
 		base.matrix = M;
 		base.color = C;
@@ -129,7 +150,15 @@ void Apt::buildRenderList(AptRenderList &out)
 			AptValue tag;
 			if (inst->getOwn("_type", tag) && tag.isString())
 			{
+				if (nativeTag && tag.toString() != *nativeTag)
+				{
+					return; // every tagged component replaces its children, including a nonmatching one
+				}
 				AptRenderCommand cmd = base;
+				if (nativeTag)
+				{
+					cmd.path = inst->targetPath();
+				}
 				cmd.kind = AptRenderCommand::Kind::Placeholder;
 				cmd.symbolName = tag.toString();
 				cmd.nativeTag = true;
@@ -179,6 +208,10 @@ void Apt::buildRenderList(AptRenderList &out)
 			{
 				if (e.characterId == inst->charRef().character->id && m_userHost.isComponentSymbol(f.name, e.name))
 				{
+					if (nativeTag)
+					{
+						return; // exported components also replace their children; they are not script tags
+					}
 					AptRenderCommand cmd = base;
 					cmd.kind = AptRenderCommand::Kind::Placeholder;
 					cmd.symbolMovie = f.name;
@@ -197,6 +230,10 @@ void Apt::buildRenderList(AptRenderList &out)
 			}
 		}
 
+		if (nativeTag && !inst->isSpriteBase() && inst->type() != AptCharacterInst::Type::Button)
+		{
+			return;
+		}
 		switch (inst->type())
 		{
 			case AptCharacterInst::Type::Shape:
@@ -374,6 +411,11 @@ void Apt::buildRenderList(AptRenderList &out)
 				std::int32_t maskEnd = -1; // the clip depth of the mask in force (-1: none)
 				for (AptCharacterInst *k : kids)
 				{
+					if (nativeTag)
+					{
+						emit(k, M, C, level);
+						continue;
+					}
 					if (maskEnd >= 0 && k->depth() > maskEnd)
 					{
 						AptRenderCommand end = base;

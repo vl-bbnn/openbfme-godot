@@ -1064,21 +1064,14 @@ bool InGameHud::radarSquare(float out[4])
 	{
 		return false;
 	}
-	AptRenderList list;
-	m_wm->apt().buildRenderList(list);
-	const AptRenderCommand *clip = nullptr;
-	for (const AptRenderCommand &c : list.commands)
-	{
-		if (c.kind == AptRenderCommand::Kind::Placeholder && c.nativeTag && c.symbolName == "AptPalantir::RenderRadar")
-		{
-			clip = &c;
-			break;
-		}
-	}
-	if (!clip)
+	AptRenderCommand radarClip;
+	// This input query needs one component, not the geometry/text of the whole HUD.
+	// Query the current tree each time so animation, visibility and input between frames remain current.
+	if (!m_wm->apt().findNativePlaceholder("AptPalantir::RenderRadar", radarClip))
 	{
 		return false;
 	}
+	const AptRenderCommand *clip = &radarClip;
 	AptStageMapping m;
 	m.windowW = (float)m_windowW;
 	m.windowH = (float)m_windowH;
