@@ -4663,6 +4663,8 @@ func _write_measurements() -> void:
 func _perf_frame(delta: float) -> void:
 	var now := Time.get_ticks_usec()
 	if _perf_prev_us == 0:
+		if _perf:
+			RenderingServer.viewport_set_measure_render_time(get_viewport().get_viewport_rid(), true)
 		_perf_prev_us = now
 		_perf_last = now
 		return
@@ -4676,6 +4678,11 @@ func _perf_frame(delta: float) -> void:
 		if not _perf_parts.has(k):
 			_perf_parts[k] = 0.0
 		_perf_parts[k] += t.get(k, 0.0)
+	if _perf:
+		var viewport_rid := get_viewport().get_viewport_rid()
+		for sample in [["render_cpu_ms", RenderingServer.viewport_get_measured_render_time_cpu(viewport_rid)],
+				["render_gpu_ms", RenderingServer.viewport_get_measured_render_time_gpu(viewport_rid)]]:
+			_perf_parts[sample[0]] = _perf_parts.get(sample[0], 0.0) + sample[1]
 	if _hud != null and _hud.has_method("get_frame_timings"):
 		var h: Dictionary = _hud.get_frame_timings()
 		_perf_parts["hud_update_ms"] = _perf_parts.get("hud_update_ms", 0.0) + h.get("hud_update_ms", 0.0)
@@ -4695,7 +4702,7 @@ func _perf_frame(delta: float) -> void:
 		_perf_stat_pid = -1
 	var n := _perf_times.size()
 	var cpu1 := _main_thread_cpu_ms()
-	var cpu_per_frame := (cpu1 - _perf_cpu0) / maxf(n, 1) if _perf_cpu0 >= 0.0 else -1.0
+	var cpu_per_frame := (cpu1 - _perf_cpu0) / maxf(n, 1) if _perf_cpu0 >= 0.0 and cpu1 >= _perf_cpu0 else -1.0
 	_perf_cpu0 = cpu1
 	if _perf:
 		var v := _perf_times.duplicate()
@@ -4705,7 +4712,12 @@ func _perf_frame(delta: float) -> void:
 			sum += x
 		var parts := ""
 		for k in _perf_parts.keys():
-			parts += " %s=%.2f" % [k, _perf_parts[k] / maxf(n, 1)]
+			var mean: float = _perf_parts[k] / maxf(n, 1)
+			# Some drivers return no GPU timestamps (including the tested Metal runtime).
+			# An absent sample is not evidence of zero GPU cost.
+			if k == "render_gpu_ms" and _perf_parts[k] <= 0.0:
+				mean = -1.0
+			parts += " %s=%.2f" % [k, mean]
 		var dv := _perf_deltas.duplicate()
 		dv.sort()
 		var low_n := maxi(1, n / 100) # lane PERF-1: the 1% low (the frame rate of the slowest 1% of the frames)
@@ -4713,6 +4725,19 @@ func _perf_frame(delta: float) -> void:
 		for i in range(n - low_n, n):
 			low_sum += v[i]
 		print("GAME PERF main thread CPU %.2f ms per frame" % cpu_per_frame)
+		# Godot estimates, not RSS or a complete GPU allocation inventory. Pipeline counts are cumulative.
+		print("GAME PERF resources: ", JSON.stringify({
+			"viewport_gpu_timing_available": _perf_parts.get("render_gpu_ms", 0.0) > 0.0,
+			"engine_static_bytes": int(Performance.get_monitor(Performance.MEMORY_STATIC)),
+			"video_bytes": int(Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED)),
+			"texture_bytes": int(Performance.get_monitor(Performance.RENDER_TEXTURE_MEM_USED)),
+			"buffer_bytes": int(Performance.get_monitor(Performance.RENDER_BUFFER_MEM_USED)),
+			"pipeline_canvas": int(Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_CANVAS)),
+			"pipeline_mesh": int(Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_MESH)),
+			"pipeline_surface": int(Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_SURFACE)),
+			"pipeline_draw": int(Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_DRAW)),
+			"pipeline_specialization": int(Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_SPECIALIZATION)),
+		}))
 		print("GAME PERF frames=%d fps=%.1f low1%%=%.1f frame_ms mean %.2f p50 %.2f p95 %.2f p99 %.2f max %.2f (engine delta p5 %.2f p50 %.2f p95 %.2f) objects=%d | mean%s" % [n,
 			1000.0 * n / maxf(sum, 0.001), 1000.0 * low_n / maxf(low_sum, 0.001), sum / maxf(n, 1), v[int(0.5 * (n - 1))], v[int(0.95 * (n - 1))], v[int(0.99 * (n - 1))], v[n - 1],
 			dv[int(0.05 * (n - 1))], dv[int(0.5 * (n - 1))], dv[int(0.95 * (n - 1))], t.get("presented_objects", 0), parts]) # lane PATHPERF-1: get_object_count waits for the worker
@@ -6014,14 +6039,9 @@ func _show_desync_box(dumps: Array) -> void:
 		print("GAME NET desync screenshot: ", _net_shot_desync)
 
 
-# lane PERF-1: the main thread's CPU time in ms (Linux: /proc/self/task/<pid>/schedstat, nanoseconds on the CPU; -1 elsewhere): a frame cost that other
-# processes' load does not inflate, readable with any build of the extension
+# Calling-thread clock: this script runs on the main thread. The native query works on macOS, Windows and Linux and never waits for logic.
 func _main_thread_cpu_ms() -> float:
-	var f := FileAccess.open("/proc/self/task/%d/schedstat" % OS.get_process_id(), FileAccess.READ)
-	if f == null:
-		return -1.0
-	var parts := f.get_line().split(" ") # /proc files report size 0: read the line, not the "whole" file
-	return float(parts[0]) / 1.0e6 if parts.size() > 0 else -1.0
+	return _world.get_thread_cpu_ms()
 
 
 ## --net-end (lanes END-1 / END-2): at --net-frames the joiner surrenders through the quit menu (Esc, Forfeit, its confirmation: MSG_SELF_DESTRUCT(false) on

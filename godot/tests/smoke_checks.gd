@@ -48,6 +48,15 @@ func _run() -> int:
 	if not ClassDB.class_exists("RetailFileSystem"):
 		print("FAIL: the openbfme extension is not loaded (build engine/, then godot --headless --import)")
 		return EXIT_FAIL
+	var clock_world: Node = ClassDB.instantiate("GameWorld")
+	var cpu_before: float = clock_world.get_thread_cpu_ms()
+	OS.delay_msec(80)
+	var cpu_after: float = clock_world.get_thread_cpu_ms()
+	# tolerance: OS thread clocks have an unspecified epoch; a failed query must not look like a valid reading.
+	_check(cpu_before >= 0.0 and cpu_after >= cpu_before, "native thread CPU clock is available and monotonic")
+	# tolerance: sleeping 80 ms must not be counted as CPU work; 40 ms allows coarse platform timer resolution and call overhead.
+	_check(cpu_after - cpu_before < 40.0, "native thread CPU clock excludes an 80 ms sleep (%.3f ms CPU)" % (cpu_after - cpu_before))
+	clock_world.free()
 	var rotwk := OS.get_environment("ROTWK_INSTALL")
 	var bfme2 := OS.get_environment("BFME2_INSTALL")
 	if rotwk.is_empty() or bfme2.is_empty():

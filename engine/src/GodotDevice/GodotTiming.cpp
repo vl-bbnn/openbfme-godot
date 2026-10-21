@@ -31,13 +31,16 @@ double threadCpuMs()
 	FILETIME created, exited, kernel, user;
 	if (!GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user))
 	{
-		return 0.0;
+		return -1.0;
 	}
 	const auto ticks = [](const FILETIME &f) { return ((unsigned long long)f.dwHighDateTime << 32) | f.dwLowDateTime; };
 	return (double)(ticks(kernel) + ticks(user)) / 10000.0; // 100 ns units
 #else
 	timespec ts{};
-	clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+	if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0)
+	{
+		return -1.0;
+	}
 	return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1.0e6;
 #endif
 }

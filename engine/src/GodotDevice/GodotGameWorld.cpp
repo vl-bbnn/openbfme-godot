@@ -330,6 +330,7 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("build2_repair", "dozers", "target"), &GameWorld::build2_repair);
 	ClassDB::bind_method(D_METHOD("get_stats"), &GameWorld::get_stats);
 	ClassDB::bind_method(D_METHOD("get_frame_timings"), &GameWorld::get_frame_timings);
+	ClassDB::bind_method(D_METHOD("get_thread_cpu_ms"), &GameWorld::get_thread_cpu_ms);
 	ClassDB::bind_method(D_METHOD("get_logic_wait_sites"), &GameWorld::get_logic_wait_sites);
 	ClassDB::bind_method(D_METHOD("is_logic_held"), &GameWorld::is_logic_held);
 	ClassDB::bind_method(D_METHOD("get_client_window_stats"), &GameWorld::get_client_window_stats);
@@ -1858,7 +1859,7 @@ void GameWorld::advance(double delta)
 	{
 		// lane PERF-1: everything the main thread ran since the last advance (the whole previous render frame: scripts, this node, Godot's rendering)
 		const double cpu = timing::threadCpuMs();
-		m_lastMainCpuMs = m_mainCpuAtAdvance < 0.0 ? 0.0 : timing::spanMs(cpu, m_mainCpuAtAdvance);
+		m_lastMainCpuMs = cpu < 0.0 || m_mainCpuAtAdvance < 0.0 ? -1.0 : timing::spanMs(cpu, m_mainCpuAtAdvance);
 		m_mainCpuAtAdvance = cpu;
 	}
 	const auto worldContext = m_world ? m_world->enterContext() : nullptr; // this world's stores and audio validator while it runs (several worlds may live)
@@ -3538,6 +3539,11 @@ Dictionary GameWorld::get_stats() const
 		s["static"] = st->get_stats();
 	}
 	return s;
+}
+
+double GameWorld::get_thread_cpu_ms() const
+{
+	return timing::threadCpuMs();
 }
 
 Dictionary GameWorld::get_frame_timings() const
