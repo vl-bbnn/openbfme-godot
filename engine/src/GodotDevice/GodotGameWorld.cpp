@@ -39,6 +39,8 @@
 #include "Common/WindowsCrashDump.h"
 #include "Common/Upgrade.h"
 #include "GameLogic/Combat/CombatState.h"
+#include "GameLogic/Combat/ObjectWeapons.h"
+#include "GameLogic/WeaponState.h"
 #include "GameLogic/Module/ProjectileModules.h"
 #include "GameLogic/VictoryConditions.h"
 #include "Common/PlayerList.h"
@@ -2850,6 +2852,110 @@ Dictionary GameWorld::get_object(int64_t id) const
 		}
 	}
 	d["models"] = models;
+	// Developer diagnostic, default off and evaluated only for an explicit object
+	// query. These are already chosen CPU draw poses and component fields, not a
+	// physical display timestamp or a claim about retail behaviour. No advance,
+	// animation selection, path request, weapon update or RNG call belongs here.
+	if (const char *enabled = std::getenv("OPENBFME_ANIMATION_DIAGNOSTICS"); enabled && enabled[0] == '1' && enabled[1] == '\0')
+	{
+		Dictionary diag;
+		diag["version"] = 1;
+		diag["logic_frame"] = (int64_t)m_game->logic().getFrame();
+		const auto presented = m_game->presentedSnapshot();
+		diag["presented_frame_known"] = (bool)presented;
+		diag["presented_frame"] = presented ? (int64_t)presented->frame : (int64_t)-1;
+		const auto point = [](const Coord3D &v) { return Vector3(v.x, v.y, v.z); };
+		const AIUpdateInterface *ai = o->getAIUpdateInterface();
+		diag["ai_present"] = ai != nullptr;
+		if (ai)
+		{
+			const AIMover &m = ai->mover();
+			Dictionary movement;
+			movement["victim"] = (int64_t)ai->currentVictimId();
+			movement["target_horde"] = (int64_t)ai->targetHordeId();
+			movement["goal_path_index"] = ai->currentGoalPathIndex();
+			movement["goal_type"] = (int64_t)m.goalType();
+			movement["goal"] = point(m.goalPosition());
+			movement["final"] = point(m.finalPosition());
+			movement["requested"] = point(m.requestedDestination());
+			movement["desired_speed"] = m.desiredSpeed();
+			movement["waiting"] = m.isWaitingForPath();
+			movement["blocked"] = m.isBlocked();
+			movement["blocked_frames"] = m.blockedFrames();
+			movement["blocker"] = (int64_t)m.blockerId();
+			movement["complete"] = m.movementComplete();
+			movement["attack_path_victim"] = (int64_t)m.attackPathVictim();
+			Array nodes;
+			int64_t count = 0;
+			const Path *path = m.path();
+			for (const PathNode *n = path ? path->getFirstNode() : nullptr; n; n = n->getNext())
+			{
+				if (count < 64) nodes.push_back(point(*n->getPosition()));
+				++count;
+			}
+			movement["path_nodes"] = nodes;
+			movement["path_node_count"] = count;
+			movement["path_nodes_truncated"] = count > (int64_t)nodes.size();
+			diag["movement"] = movement;
+		}
+		const ObjectWeapons *weapons = o->getWeapons();
+		const Weapon *weapon = weapons ? weapons->currentWeapon() : nullptr;
+		diag["weapon_present"] = weapon != nullptr;
+		if (weapon)
+		{
+			Dictionary w;
+			w["name"] = weapon->getTemplate() ? toGodot(weapon->getTemplate()->getName()) : String();
+			w["slot"] = weapons->curSlot();
+			w["status"] = weapons->currentStatus(); // const getStatus, never the write-back wrapper
+			w["stored_status"] = weapon->storedStatus();
+			w["last_fire"] = (int64_t)weapon->lastFireFrame();
+			w["pre_attack_end"] = (int64_t)weapon->whenPreAttackFinished();
+			w["firing_end"] = (int64_t)weapon->whenFiringEnds();
+			w["next_fire"] = (int64_t)weapon->whenWeCanFireAgain();
+			diag["weapon"] = w;
+		}
+		const Drawable *dr = m_game->drawables().findByObject(o->getID());
+		diag["drawable_present"] = dr != nullptr;
+		Array draws;
+		if (dr)
+		{
+			int entryIndex = 0;
+			for (const DrawEntry &entry : dr->entries())
+			{
+				if (entry.draw)
+				{
+					const W3DDrawFrame f = entry.draw->frame();
+					Dictionary draw;
+					draw["entry"] = entryIndex;
+					draw["model"] = toGodot(f.modelName);
+					draw["state"] = toGodot(f.animationStateName);
+					draw["hidden"] = f.hidden;
+					draw["opacity"] = f.opacity;
+					draw["blending"] = f.blending;
+					draw["blend"] = f.blendPercentage;
+					Array tracks;
+					for (int i = 0; i < f.trackCount; ++i)
+					{
+						const W3DDrawTrack &t = f.tracks[i];
+						Dictionary track;
+						track["clip"] = toGodot(t.clipName);
+						track["label"] = toGodot(t.label);
+						track["frame"] = t.frame;
+						track["previous"] = t.prevFrame;
+						track["mode"] = t.mode;
+						track["direction"] = t.direction;
+						track["animation_present"] = t.anim != nullptr;
+						tracks.push_back(track);
+					}
+					draw["tracks"] = tracks;
+					draws.push_back(draw);
+				}
+				++entryIndex;
+			}
+		}
+		diag["draw_frames"] = draws;
+		d["animation_diagnostics"] = diag;
+	}
 	return d;
 }
 
