@@ -16,6 +16,7 @@
 #include "Common/Player.h"
 #include "Common/BuildAssistant.h"
 #include "GameLogic/Economy.h"
+#include "GameLogic/Combat/CombatState.h"
 #include "Common/XferLoad.h"
 #include "Common/XferSave.h"
 #include "GameLogic/Map/TerrainTrees.h"
@@ -38,6 +39,9 @@
 #include "Common/BuildVersion.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/Module/AIUpdate.h"
+#include "GameLogic/Module/ProductionExitModules.h"
+#include "GameLogic/Module/ProjectileModules.h"
+#include "GameLogic/Module/SpawnBehavior.h"
 #include "GameLogic/Module/SpecialAbilityModules.h"
 #include "GameLogic/ScriptEngine/ScriptEngine.h"
 #include "GameNetwork/LockstepDriver.h"
@@ -2390,4 +2394,245 @@ TEST_CASE("ownerfix2 retail: a skirmish with a -50% handicap saved, loaded and p
 	REQUIRE(playerAt(v.game->logic(), 0));
 	CHECK(playerAt(v.game->logic(), 0)->getHandicap() == -50);
 	CHECK(listed(v.game->logic()) == atSave);
+}
+
+TEST_CASE("spawn exit save retail: occupied Mordor barricades survive a full snapshot load and continue with identical frame hashes")
+{
+	OPENBFME_REQUIRE_START(s);
+	NewGameMessage message = gameMessage(*s, 56672002u);
+	message.game.mapName = "maps/map mp fords of isen ii/map mp fords of isen ii.map";
+	message.game.slots[0].playerTemplate = templateIndex(s->world->playerTemplates(), "FactionMordor");
+	message.game.slots[1].state = SLOT_CLOSED;
+	const ProfileIdentity profile = ProfileIdentity::compute({}, RandomAlgorithm::ZH_CarryChain);
+	struct Occupied
+	{
+		ObjectID id = INVALID_ID;
+		std::string name;
+		std::vector<ObjectID> archers;
+		std::vector<Coord3D> positions;
+		std::vector<float> angles;
+		std::vector<std::uint8_t> exitBytes;
+		ExitDoorType available = DOOR_NONE_AVAILABLE;
+	};
+	std::vector<Occupied> occupied;
+	const int afterFrames = 150; // thirty seconds of logic after the load, not a rendering benchmark
+	// Direct object creation is a test fixture; construction costs, placement UI and fortress attachment are not exercised here.
+	Recorded rec = recordGame(*s, message, profile, 25, afterFrames, "spawn_exit_occupied", true, [&](LiveGame &game) {
+		GameLogic &logic = game.logic();
+		Object *fortress = nullptr;
+		for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
+		{
+			if (o->getTemplate()->getName() == "MordorFortressCitadel") fortress = o;
+		}
+		REQUIRE(fortress);
+		const Coord3D start = *fortress->getPosition();
+		for (const char *name : { "MordorBarricade", "MordorFortressBarricadeExpansion" })
+		{
+			const ThingTemplate *tt = logic.things().findTemplate(name);
+			REQUIRE(tt);
+			Object *o = logic.newObject(tt, fortress->getTeam(), ObjectStatusMaskType{});
+			REQUIRE(o);
+			Coord3D at{ start.x + 250.0f, start.y + (occupied.empty() ? 0.0f : 250.0f), 0.0f };
+			at.z = logic.getGroundHeight(at.x, at.y);
+			o->setPosition(&at);
+			Occupied item;
+			item.id = o->getID();
+			item.name = name;
+			occupied.push_back(item);
+		}
+		for (int i = 0; i < 20; ++i) REQUIRE(game.advance(0.2) == 1);
+		game.drainFrames();
+		for (Occupied &item : occupied)
+		{
+			Object *o = logic.findObjectByID(item.id);
+			REQUIRE(o);
+			auto *exit = dynamic_cast<SpawnPointProductionExitUpdate *>(o->getObjectExitInterface());
+			const auto *spawn = dynamic_cast<const SpawnBehavior *>(SpawnBehaviorInterface::of(*o));
+			REQUIRE(exit);
+			REQUIRE(spawn);
+			REQUIRE(exit->bonesInitialized());
+			REQUIRE(spawn->spawns().size() == (item.name == "MordorBarricade" ? 4u : 3u));
+			for (ObjectID id : spawn->spawns())
+			{
+				Object *archer = logic.findObjectByID(id);
+				REQUIRE(archer);
+				REQUIRE(archer->isDisabledByType(DISABLED_HELD));
+				item.archers.push_back(id);
+				item.positions.push_back(*archer->getPosition());
+				item.angles.push_back(archer->getOrientation());
+			}
+			const ThingTemplate *archer = logic.findObjectByID(item.archers.front())->getTemplate();
+			// Occupied does not imply full: the expansion's initial burst may leave a real model bone unused.
+			const auto *data = dynamic_cast<const SpawnPointProductionExitUpdateModuleData *>(exit->getModuleData());
+			REQUIRE(data);
+			float pristine[SpawnPointProductionExitUpdate::MAX_SPAWN_POINTS][12] = {};
+			REQUIRE(logic.combat().launchOffsets());
+			const int count = logic.combat().launchOffsets()->multiLogicalBones(*o, data->m_spawnPointBoneName,
+				o->getModelConditionBits(), SpawnPointProductionExitUpdate::MAX_SPAWN_POINTS, pristine);
+			CHECK(count == 4); // both retail models have four ARROW_ bones; their INI initial bursts differ
+			item.available = count == (int)item.archers.size() ? DOOR_NONE_AVAILABLE : DOOR_1;
+			CHECK(exit->reserveDoorForExit(archer, nullptr) == item.available);
+			MESSAGE(item.name << " pristine bones " << count << ", occupied " << item.archers.size());
+			XferSave bytes;
+			exit->xfer(bytes);
+			item.exitBytes = bytes.data();
+		}
+		CHECK(logic.report().errors.empty());
+	});
+	REQUIRE(occupied.size() == 2);
+	REQUIRE(!rec.save.snapshot.empty());
+	std::string error;
+	SaveGameFile save;
+	REQUIRE_MESSAGE(SaveGameFile::parse(rec.save.encode(), save, &error), error);
+	Loaded g;
+	CommandLogLoad cl;
+	REQUIRE_MESSAGE(cl.prepare(save, &error), error);
+	REQUIRE(cl.mode() == CommandLogLoad::Mode::Snapshot);
+	load(*s, cl.log().header.game, g);
+	REQUIRE_MESSAGE(cl.begin(*g.game, &error), error);
+	REQUIRE(cl.state() == CommandLogLoad::State::Ready);
+	CHECK(cl.hashesCompared() == 0);
+	CHECK(g.game->logic().getFrame() == rec.savedFrame);
+	CHECK(g.game->logic().computeStateHash() == save.header.stateHash);
+	for (const Occupied &item : occupied)
+	{
+		INFO(item.name);
+		Object *o = g.game->logic().findObjectByID(item.id);
+		REQUIRE(o);
+		CHECK(o->getTemplate()->getName() == item.name);
+		auto *exit = dynamic_cast<SpawnPointProductionExitUpdate *>(o->getObjectExitInterface());
+		const auto *spawn = dynamic_cast<const SpawnBehavior *>(SpawnBehaviorInterface::of(*o));
+		REQUIRE(exit);
+		REQUIRE(spawn);
+		CHECK(exit->bonesInitialized());
+		CHECK(std::vector<ObjectID>(spawn->spawns().begin(), spawn->spawns().end()) == item.archers);
+		XferSave bytes;
+		exit->xfer(bytes);
+		CHECK(bytes.data() == item.exitBytes);
+		for (size_t i = 0; i < item.archers.size(); ++i)
+		{
+			Object *archer = g.game->logic().findObjectByID(item.archers[i]);
+			REQUIRE(archer);
+			CHECK(archer->isDisabledByType(DISABLED_HELD));
+			CHECK(archer->getControllingPlayer() == o->getControllingPlayer());
+			CHECK(archer->getPosition()->x == item.positions[i].x);
+			CHECK(archer->getPosition()->y == item.positions[i].y);
+			CHECK(archer->getPosition()->z == item.positions[i].z);
+			CHECK(archer->getOrientation() == item.angles[i]);
+		}
+		const ThingTemplate *archer = g.game->logic().findObjectByID(item.archers.front())->getTemplate();
+		CHECK(exit->reserveDoorForExit(archer, nullptr) == item.available);
+	}
+	std::vector<std::uint8_t> again;
+	REQUIRE_MESSAGE(g.game->logic().saveSnapshot(again, &error), error);
+	CHECK(again == save.snapshot);
+	CHECK(drawablesOutOfStep(*g.game).empty());
+	const auto after = playOn(g, save.log, afterFrames);
+	CHECK_MESSAGE(differences(after, rec.whole.hashes, rec.savedFrame, rec.savedFrame + afterFrames).empty(), "loaded barricade continuation differs");
+	CHECK(after == rec.whole.hashes);
+	CHECK(g.game->logic().report().errors.empty());
+	MESSAGE("occupied barricades: 4 + 3 archers, snapshot " << save.snapshot.size() << " bytes, frame " << rec.savedFrame << ", " << afterFrames << " continuation frames");
+}
+
+TEST_CASE("spawn exit save combat retail: a barricade saved with arrows in flight restores its projectiles and every later frame hash")
+{
+	OPENBFME_REQUIRE_START(s);
+	for (const std::string name : { "MordorBarricade", "MordorFortressBarricadeExpansion" })
+	{
+		INFO(name);
+		NewGameMessage message = gameMessage(*s, 56672003u);
+		message.game.mapName = "maps/map mp fords of isen ii/map mp fords of isen ii.map";
+		message.game.slots[0].playerTemplate = templateIndex(s->world->playerTemplates(), "FactionMordor");
+		message.game.slots[1].state = SLOT_PLAYER; // two human slots, no skirmish AI; only a passive enemy farm is added near the barricade
+		message.game.slots[1].playerTemplate = templateIndex(s->world->playerTemplates(), "FactionMen");
+		const auto profile = ProfileIdentity::compute({}, RandomAlgorithm::ZH_CarryChain);
+		ObjectID barricadeId = INVALID_ID;
+		ObjectID targetId = INVALID_ID;
+		std::set<ObjectID> archers;
+		auto flyingFromBarricade = [&](GameLogic &logic) {
+			std::set<ObjectID> flying;
+			for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
+			{
+				if (o->isDestroyed() || o->isEffectivelyDead()) continue;
+				for (const auto &m : o->modules())
+				{
+					const auto *p = dynamic_cast<const BezierProjectileBehavior *>(m.get());
+					if (p && !p->flightPath().empty() && !p->hasDetonated() && p->victimID() == targetId && archers.count(p->projectileGetLauncherID()))
+						flying.insert(o->getID());
+				}
+			}
+			return flying;
+		};
+		Recorded rec = recordGame(*s, message, profile, 25, 150, "spawn_exit_flying", true, [&](LiveGame &game) {
+			GameLogic &logic = game.logic();
+			Object *mine = nullptr, *enemy = nullptr;
+			for (Object *o = logic.getFirstObject(); o; o = o->getNextObject())
+			{
+				if (o->getTemplate()->getName() == "MordorFortressCitadel") mine = o;
+				if (o->getTemplate()->getName() == "MenFortressCitadel") enemy = o;
+			}
+			REQUIRE(mine);
+			REQUIRE(enemy);
+			const ThingTemplate *tt = logic.things().findTemplate(name);
+			const ThingTemplate *farm = logic.things().findTemplate("GondorFarm");
+			REQUIRE(tt);
+			REQUIRE(farm);
+			Object *barricade = logic.newObject(tt, mine->getTeam(), ObjectStatusMaskType{});
+			REQUIRE(barricade);
+			barricadeId = barricade->getID();
+			Coord3D at = *mine->getPosition();
+			at.x += 250.0f;
+			at.z = logic.getGroundHeight(at.x, at.y);
+			barricade->setPosition(&at);
+			for (int i = 0; i < 20; ++i) REQUIRE(game.advance(0.2) == 1);
+			game.drainFrames();
+			const auto *spawn = dynamic_cast<const SpawnBehavior *>(SpawnBehaviorInterface::of(*barricade));
+			REQUIRE(spawn);
+			REQUIRE(spawn->spawns().size() == (name == "MordorBarricade" ? 4u : 3u));
+			archers.insert(spawn->spawns().begin(), spawn->spawns().end());
+			Object *target = logic.newObject(farm, enemy->getTeam(), ObjectStatusMaskType{});
+			REQUIRE(target);
+			targetId = target->getID();
+			at.x += 250.0f;
+			at.z = logic.getGroundHeight(at.x, at.y);
+			target->setPosition(&at);
+			for (int i = 0; i < 150 && flyingFromBarricade(logic).empty(); ++i)
+			{
+				REQUIRE(game.advance(0.2) == 1);
+				game.drainFrames();
+			}
+			REQUIRE_FALSE(flyingFromBarricade(logic).empty());
+		});
+		std::string error;
+		SaveGameFile save;
+		REQUIRE_MESSAGE(SaveGameFile::parse(rec.save.encode(), save, &error), error);
+		Loaded g;
+		CommandLogLoad cl;
+		REQUIRE_MESSAGE(cl.prepare(save, &error), error);
+		REQUIRE(cl.mode() == CommandLogLoad::Mode::Snapshot);
+		load(*s, cl.log().header.game, g);
+		REQUIRE_MESSAGE(cl.begin(*g.game, &error), error);
+		REQUIRE(cl.state() == CommandLogLoad::State::Ready);
+		CHECK(g.game->logic().computeStateHash() == save.header.stateHash);
+		const size_t flying = flyingFromBarricade(g.game->logic()).size();
+		REQUIRE_FALSE(flying == 0);
+		Object *barricade = g.game->logic().findObjectByID(barricadeId);
+		REQUIRE(barricade);
+		const auto *spawn = dynamic_cast<const SpawnBehavior *>(SpawnBehaviorInterface::of(*barricade));
+		REQUIRE(spawn);
+		CHECK(spawn->spawns().size() == (name == "MordorBarricade" ? 4u : 3u));
+		std::vector<std::uint8_t> again;
+		REQUIRE_MESSAGE(g.game->logic().saveSnapshot(again, &error), error);
+		CHECK(again == save.snapshot);
+		const auto before = g.game->logic().combat().counters();
+		const auto after = playOn(g, save.log, 150);
+		CHECK_MESSAGE(differences(after, rec.whole.hashes, rec.savedFrame, rec.savedFrame + 150).empty(), "loaded arrow flight differs");
+		CHECK(after == rec.whole.hashes);
+		// tolerance: the restored live projectile paths must actually resolve and deal damage during this continuation.
+		CHECK(g.game->logic().combat().counters().projectilesDetonated > before.projectilesDetonated);
+		// tolerance: a combat continuation must apply real damage, not merely preserve idle actors.
+		CHECK(g.game->logic().combat().counters().damageApplications > before.damageApplications);
+		CHECK(g.game->logic().report().errors.empty());
+		MESSAGE(name << ": restored " << flying << " flying arrows at frame " << rec.savedFrame << ", 150 later hashes equal");
+	}
 }

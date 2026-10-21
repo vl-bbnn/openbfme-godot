@@ -819,3 +819,72 @@ TEST_CASE("spawn exit retail: Mordor barricades receive their initial archers th
 		}
 	}
 }
+
+TEST_CASE("spawn exit combat retail: held barricade archers acquire and damage an enemy without moving; allied and disabled-acquisition controls stay quiet")
+{
+	if (!haveWorld()) return;
+	for (const auto &entry : { std::make_pair("MordorBarricade", 4u), std::make_pair("MordorFortressBarricadeExpansion", 3u) })
+	{
+		for (int mode = 0; mode < 3; ++mode)
+		{
+			INFO(std::string(entry.first) << " mode " << mode); // enemy, allied target, acquisition disabled
+			Arena a(shared());
+			a.logic.combat().setAutoAcquireEnabled(mode != 2);
+			Object *barricade = a.place(entry.first, 1, 500.0f, 500.0f);
+			a.run(20);
+			const auto *spawn = dynamic_cast<const SpawnBehavior *>(SpawnBehaviorInterface::of(*barricade));
+			REQUIRE(spawn);
+			REQUIRE(spawn->spawns().size() == entry.second);
+			const std::set<ObjectID> archers(spawn->spawns().begin(), spawn->spawns().end());
+			std::map<ObjectID, Coord3D> positions;
+			for (ObjectID id : archers)
+			{
+				Object *o = a.logic.findObjectByID(id);
+				REQUIRE(o);
+				REQUIRE(o->isDisabledByType(DISABLED_HELD));
+				positions[id] = *o->getPosition();
+			}
+			// The farm has no weapon and does not retaliate. No player or individual-archer attack command is injected.
+			Object *target = a.place("GondorFarm", mode == 1 ? 1 : 0, 700.0f, 500.0f);
+			const ObjectID targetId = target->getID();
+			std::set<ObjectID> shooters;
+			unsigned hits = 0;
+			a.logic.combat().setDamageTrace([&](const Object &victim, std::uint32_t source, float, float taken) {
+				if (victim.getID() == targetId && taken > 0.0f)
+				{
+					CHECK(archers.count((ObjectID)source) == 1);
+					shooters.insert((ObjectID)source);
+					++hits;
+				}
+			});
+			const auto before = a.logic.combat().counters();
+			a.run(150); // thirty seconds of logic, allowing normal acquisition, aim, projectile travel and reload
+			a.logic.combat().setDamageTrace(nullptr);
+			const auto after = a.logic.combat().counters();
+			MESSAGE(std::string(entry.first) << " mode " << mode << ": launches " << after.projectilesLaunched - before.projectilesLaunched
+				<< ", hits " << hits << ", shooters " << shooters.size());
+			if (mode == 0)
+			{
+				CHECK(shooters == archers);
+				// tolerance: the scenario must produce real projectile launches and damaging hits, without claiming retail damage/timing parity.
+				CHECK(after.projectilesLaunched > before.projectilesLaunched);
+			}
+			else
+			{
+				CHECK(shooters.empty());
+				CHECK(hits == 0);
+				CHECK(after.projectilesLaunched == before.projectilesLaunched);
+			}
+			for (ObjectID id : archers)
+			{
+				Object *o = a.logic.findObjectByID(id);
+				REQUIRE(o);
+				CHECK(o->isDisabledByType(DISABLED_HELD));
+				CHECK(o->getPosition()->x == positions.at(id).x);
+				CHECK(o->getPosition()->y == positions.at(id).y);
+				CHECK(o->getPosition()->z == positions.at(id).z);
+			}
+			CHECK(a.logic.report().errors.empty());
+		}
+	}
+}
