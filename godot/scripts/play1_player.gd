@@ -2719,11 +2719,28 @@ func _scenario_farm() -> String:
 			break
 	if farm.is_empty():
 		return "this faction has no farm command"
-	await move_to(palantir_button(farm.frame))
+	# A found Apt clip can still be entering the viewport or moving on rollover.
+	# Resolve the actual hit after moving, before sending this single click.
+	var button_pixel := Vector2(-1, -1)
+	var button_ready_start := Time.get_ticks_msec()
+	for attempt in 20:
+		var presented: Dictionary = hud.find_button_window(farm.frame)
+		if not presented.get("clickable", false):
+			await game._step(3)
+			continue
+		var point := Vector2(presented.x, presented.y)
+		await move_to(point)
+		presented = hud.find_button_window(farm.frame)
+		if presented.get("clickable", false) and game._shell.hit_test_stage(game._shell.window_to_stage(point.floor())) == presented.path:
+			button_pixel = point
+			print("PLAY1 farm button ready: ", JSON.stringify({"wait_ms": Time.get_ticks_msec() - button_ready_start, "pixel": point, "path": presented.path, "selection": hud.get_selection()}))
+			break
+	if button_pixel.x < 0:
+		return "the farm button has no current clickable hit point"
 	var button_start := Time.get_ticks_msec()
-	press(palantir_button(farm.frame), MOUSE_BUTTON_LEFT, true)
+	press(button_pixel, MOUSE_BUTTON_LEFT, true)
 	await game.get_tree().process_frame
-	press(palantir_button(farm.frame), MOUSE_BUTTON_LEFT, false)
+	press(button_pixel, MOUSE_BUTTON_LEFT, false)
 	while not hud.get_placement().get("placing", false) and Time.get_ticks_msec() - button_start < 5000:
 		await game.get_tree().process_frame
 	var placement_mode_ms := Time.get_ticks_msec() - button_start

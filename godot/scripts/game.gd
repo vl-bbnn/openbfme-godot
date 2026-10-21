@@ -2628,19 +2628,61 @@ func _wait_button_settled(level: int, path: String) -> void:
 		await _step(1)
 
 
-func _click_button(level: int, path: String) -> bool:
+## Scripted input must reach a visible child of the requested clip. Rollover can
+## replace that child; a new firstButton lookup may instead find a hidden face.
+func _visible_shell_hit(level: int, path: String, p: Vector2) -> String:
+	if not get_viewport().get_visible_rect().has_point(_shell.stage_to_window(p)):
+		return ""
+	var full := "_level%d.%s" % [level, path]
+	var hit: String = _shell.hit_test_stage(p)
+	if hit != full and not hit.begins_with(full + "."):
+		return ""
+	for button in _shell.list_buttons(level):
+		if button.path == hit and bool(button.seen):
+			return hit
+	return ""
+
+
+func _shell_button_point(level: int, path: String) -> Dictionary:
 	var button: Dictionary = _shell.find_button(level, path)
-	if not button.found:
-		printerr("GAME no button at or under '%s' on _level%d" % [path, level])
+	if button.found and button.enabled and String(button.hidden_by).is_empty():
+		var p := Vector2(button.x, button.y)
+		if _visible_shell_hit(level, path, p) == button.path:
+			return button
+	# A parent clip can contain several faces. Keep the actual visible hit rather
+	# than clicking the bounds of its first, hidden child.
+	for candidate in _shell.list_buttons(level):
+		if bool(candidate.seen) and bool(candidate.hittable):
+			var p := Vector2(candidate.x, candidate.y)
+			if _visible_shell_hit(level, path, p) == candidate.path:
+				return candidate
+	return {}
+
+
+func _click_button(level: int, path: String) -> bool:
+	var started := Time.get_ticks_msec()
+	var hit := ""
+	var p := Vector2()
+	while Time.get_ticks_msec() - started < 5000:
+		var button := _shell_button_point(level, path)
+		if button.is_empty():
+			await _step(1)
+			continue
+		p = Vector2(button.x, button.y)
+		_mouse_event(p, false, false)
+		await _step(2)
+		hit = _visible_shell_hit(level, path, p)
+		if not hit.is_empty():
+			break
+	if hit.is_empty():
+		printerr("GAME no current visible hit at or under '%s' on _level%d: %s" % [path, level, JSON.stringify(_shell.find_button(level, path))])
 		return false
-	var p := Vector2(button.x, button.y)
-	_mouse_event(p, false, false)
-	await _step(2)
+	print("GAME click target ", JSON.stringify({"requested": path, "path": hit, "stage": p, "wait_ms": Time.get_ticks_msec() - started}))
 	_mouse_event(p, true, true)
 	await _step(2)
 	_mouse_event(p, false, true)
 	await _step(2)
-	print("GAME clicked ", button.path)
+	print("GAME clicked ", hit)
 	return true
 
 
@@ -4605,6 +4647,30 @@ func _run_end() -> void:
 	await _finish_end_flow(faction)
 
 
+## Follow the score movie's visible actions. A hidden Continue can occupy the
+## same bounds as Skip or More; each presented action is clicked only once.
+func _continue_score_screen() -> Dictionary:
+	var pressed: Array = []
+	var started := Time.get_ticks_msec()
+	while _state == State.SCORE and Time.get_ticks_msec() - started < 20000:
+		var level: int = _shell.shell_top_level()
+		var choice := ""
+		for button in ["Continue", "Skip", "More"]:
+			var path: String = "Main.MainButtons." + String(button)
+			if not _shell_button_point(level, path).is_empty():
+				choice = path
+				break
+		if not choice.is_empty() and not pressed.has(choice):
+			if not await _click_button(level, choice):
+				return {"ok": false, "pressed": pressed, "error": "score action lost its visible hit: " + choice}
+			pressed.append(choice)
+			print("GAME score action ", choice)
+		# Wait for the movie/state to advance instead of pressing the same action again.
+		await _step(3)
+	return {"ok": _state == State.MENU, "pressed": pressed,
+		"error": "" if _state == State.MENU else "the score movie did not reach the menu"}
+
+
 ## the score screen onwards: the movie's buttons, Continue, the main menu and a second game
 func _finish_end_flow(faction: String, prefix := "end1") -> void:
 	if _state != State.SCORE:
@@ -4623,7 +4689,7 @@ func _finish_end_flow(faction: String, prefix := "end1") -> void:
 	var lvl: int = _shell.shell_top_level()
 	print("GAME END graph: ", JSON.stringify(_shell.get_timeline_graph("", _graph_path).get("axis", {})), " at ", _graph_path)
 	# Skip ends the reveal (then Continue takes its place); the other tabs of the timeline are the movie's own buttons
-	if _shell.find_button(lvl, "Main.MainButtons.Skip").found:
+	if not _shell_button_point(lvl, "Main.MainButtons.Skip").is_empty():
 		await _click_button(lvl, "Main.MainButtons.Skip")
 		await _wait_seconds(2.0)
 	for tab in ["Units", "Structures", "Resources", "FinalScore"]:
@@ -4641,7 +4707,7 @@ func _finish_end_flow(faction: String, prefix := "end1") -> void:
 			print("GAME END tab %s: graph mode %s (member %s)" % [tab, _shell.get_timeline_graph("", _graph_path).get("mode", ""), JSON.stringify(_shell.get_member(lvl, _graph_path, "_graphMode"))])
 			_save_named("%s-%s-score-%s" % [prefix, faction, tab.to_lower()])
 	# More opens the statistics page; its Continue leaves (AptTimeLine::OnButtonContinue)
-	if _shell.find_button(lvl, "Main.MainButtons.More").found:
+	if not _shell_button_point(lvl, "Main.MainButtons.More").is_empty():
 		await _click_button(lvl, "Main.MainButtons.More")
 		await _wait_seconds(2.5)
 		# lane END-2: the statistics page lists the rows of RW 0x9CDEC1 in the StatsList gadget
@@ -4656,15 +4722,9 @@ func _finish_end_flow(faction: String, prefix := "end1") -> void:
 				cells.append("%s#%08x" % [c.text, c.color])
 			print("GAME END stats row: ", " | ".join(cells))
 		_save_named("%s-%s-score-stats" % [prefix, faction])
-	var clicked := false
-	for attempt in 6:
-		if await _click_button(lvl, "Main.MainButtons.Continue"):
-			clicked = true
-		await _wait_seconds(1.5)
-		if _state != State.SCORE:
-			break
-	if not clicked:
-		_fail("no Continue button on the score screen")
+	var navigation := await _continue_score_screen()
+	if not navigation.ok:
+		_fail("score navigation: " + JSON.stringify(navigation))
 		return
 	var w := 0.0
 	while _state != State.MENU and w < 10.0:
@@ -6290,8 +6350,10 @@ func _quit_button(name: String) -> Dictionary:
 		return {}
 	for b in _shell.list_buttons(r.level):
 		var path: String = b.path
-		if b.hittable and (path.contains("." + name + ".") or path.ends_with("." + name)):
-			return b
+		if b.hittable and b.seen and (path.contains("." + name + ".") or path.ends_with("." + name)):
+			var relative := path.trim_prefix("_level%d." % int(r.level))
+			if _visible_shell_hit(r.level, relative, Vector2(b.x, b.y)) == path:
+				return b
 	return {}
 
 
@@ -6299,15 +6361,19 @@ func _click_quit(name: String) -> bool:
 	for attempt in 40:
 		var b := _quit_button(name)
 		if not b.is_empty():
-			var p := Vector2(b.x, b.y)
-			_mouse_event(p, false, false)
-			await _step(2)
-			_mouse_event(p, true, true)
-			await _step(2)
-			_mouse_event(p, false, true)
-			await _step(2)
-			print("GAME QUIT clicked ", b.path)
-			return true
+			var r: Dictionary = _shell.quit_menu({"kind": "state"})
+			var path := String(b.path).trim_prefix("_level%d." % int(r.level))
+			# Rollover may replace the button face. Recheck under the named clip
+			# immediately before pressing, as for other scripted shell buttons.
+			var named := path.find("." + name + ".")
+			if path.begins_with(name + "."):
+				path = name
+			elif named >= 0:
+				path = path.substr(0, named + name.length() + 1)
+			var clicked: bool = await _click_button(r.level, path)
+			if clicked:
+				print("GAME QUIT clicked ", path)
+			return clicked
 		await _wait_seconds(0.1)
 	var r: Dictionary = _shell.quit_menu({"kind": "state"})
 	print("GAME QUIT buttons: ", JSON.stringify(_shell.list_buttons(r.get("level", -1))))
@@ -6478,12 +6544,9 @@ func _run_qa() -> void:
 	if flow.score_screen:
 		await _wait_seconds(4.0)
 		_save_named("qa1-%s-score" % _qa_tag)
-		var lvl: int = _shell.shell_top_level()
-		for attempt in 6:
-			await _click_button(lvl, "Main.MainButtons.Continue")
-			await _wait_seconds(1.5)
-			if _state != State.SCORE:
-				break
+		var navigation := await _continue_score_screen()
+		flow["score_navigation"] = navigation
+		print("QA score navigation ", JSON.stringify(navigation))
 		w = 0.0
 		while _state != State.MENU and w < 10.0:
 			await _wait_seconds(0.25)
