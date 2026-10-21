@@ -3007,7 +3007,8 @@ Dictionary GameWorld::prepare_initial_preview()
 				return out;
 			}
 			const PlacementGhost::Look look = PlacementGhost::lookOf(*tt);
-			if (look.model.empty())
+			const std::vector<std::string> models = PlacementGhost::modelsOf(*tt);
+			if (models.empty())
 			{
 				errors.push_back(toGodot("preview: no placement model for " + tt->getName()));
 				return out;
@@ -3023,18 +3024,21 @@ Dictionary GameWorld::prepare_initial_preview()
 			inst->set_alpha_override(true);
 			inst->set_auto_update(false);
 			inst->set_playing(false);
-			const int64_t model = inst->add_model(toGodot(look.model));
-			const int64_t instance = model < 0 ? -1 : inst->add_instance(model, Transform3D(), String(), 0.0, 0.0);
-			if (instance < 0) errors.push_back(toGodot("preview: model could not be instanced: " + look.model));
-			else
+			Array preparedModels;
+			for (const std::string &name : models)
 			{
-				inst->set_instance_opacity(instance, 0.45); // existing placement opacity; presentation only
-				inst->update_now();
+				const int64_t model = inst->add_model(toGodot(name));
+				const int64_t instance = model < 0 ? -1 : inst->add_instance(model, Transform3D(), String(), 0.0, 0.0);
+				if (instance < 0) errors.push_back(toGodot("preview: model could not be instanced: " + name));
+				else inst->set_instance_opacity(instance, 0.45); // existing placement opacity; presentation only
+				preparedModels.push_back(toGodot(name));
 			}
+			inst->update_now();
 			for (const String &e : inst->get_errors()) errors.push_back(e);
 			out["node"] = inst;
 			out["template"] = toGodot(tt->getName());
 			out["model"] = toGodot(look.model);
+			out["models"] = preparedModels;
 			out["frame_after"] = get_frame();
 			out["hash_after"] = get_state_hash();
 			if (get_frame() != frame || get_state_hash() != hash) errors.push_back("preview preparation changed simulation state");

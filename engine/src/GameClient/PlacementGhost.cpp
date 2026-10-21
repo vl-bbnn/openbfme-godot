@@ -18,6 +18,28 @@
 
 namespace PlacementGhost
 {
+std::vector<std::string> modelsOf(const ThingTemplate &tt)
+{
+	std::vector<std::string> out;
+	ModelConditionFlags flags;
+	const int bit = ModelCondition::indexOf("BUILD_PLACEMENT_CURSOR");
+	if (bit >= 0) flags.set((size_t)bit, true);
+	for (const ThingTemplate::Nugget &n : tt.getFinalOverride()->drawModules().nuggets())
+	{
+		const auto *data = dynamic_cast<const W3DModelDrawModuleData *>(n.data.get());
+		if (!data) continue;
+		const ModelConditionInfo *info = data->findBestInfo(flags);
+		if (!info) continue;
+		for (const std::string &model : info->modelNames)
+		{
+			if (model.empty() || AsciiStringUtil::compareNoCase(model, "None") == 0) continue;
+			out.push_back(model);
+			break;
+		}
+	}
+	return out;
+}
+
 Look lookOf(const ThingTemplate &tt)
 {
 	Look out;

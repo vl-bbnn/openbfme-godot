@@ -26,6 +26,11 @@ struct Look
 
 Look lookOf(const ThingTemplate &tt);
 
+// Models selected by BUILD_PLACEMENT_CURSOR across every draw module, in module
+// order (one selected model per module). Resource preparation must include the
+// secondary draw modules that PlacementIcons' drawable will actually render.
+std::vector<std::string> modelsOf(const ThingTemplate &tt);
+
 // lane PLAY-3: a castle's ghost (the owner's "no placement preview" for a builder's fortress). TARGET FACTS, the placement update RW 0x6A2AE5: when the
 // template has a castle module (RW 0x73CD88: the first behaviour module whose vslot 0x14 answers true, CastleBehavior), the layout of the local player's
 // faction (RW 0x798F70: CastleToUnpackForFaction) is read entry by entry from the CastleTemplates store (RW 0x72D72F); each entry whose template exists

@@ -6,6 +6,7 @@
 #include "HudTestUtil.h"
 
 #include "Common/Thing/ThingTemplate.h"
+#include "Common/AsciiString.h"
 #include "GameClient/PlacementGhost.h"
 #include "GameLogic/Map/CastleTemplates.h"
 
@@ -27,6 +28,18 @@ bool has(const std::vector<std::string> &v, const std::string &x)
 	return false;
 }
 } // namespace
+
+TEST_CASE("preview preparation retail: the farm includes its secondary house-color draw module")
+{
+	if (!haveWorld("preview preparation draw modules")) return;
+	const ThingTemplate *tt = shared().world->things().findTemplate("GondorFarm");
+	REQUIRE(tt);
+	const auto models = PlacementGhost::modelsOf(*tt);
+	REQUIRE(models.size() == 2);
+	CHECK(AsciiStringUtil::lowered(models[0]) == "gbfarm_skn");
+	CHECK(AsciiStringUtil::lowered(models[1]) == "gbhcfarm");
+	CHECK(PlacementGhost::lookOf(*tt).model == models.front()); // the existing first-look API keeps its behavior
+}
 
 TEST_CASE("play1 placement ghost: a structure's BUILD_PLACEMENT_CURSOR model and the sub objects its draw script hides")
 {
