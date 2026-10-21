@@ -7,10 +7,17 @@
 
 #include "GameLogic/GameLogicDispatch.h"
 #include "GameLogic/Module/ExitInterface.h"
+#include "GameLogic/Module/ProductionExitModules.h"
+#include "GameLogic/Combat/WeaponDelivery.h"
+#include "GameLogic/Combat/CombatState.h"
+#include "Common/StateHash.h"
+#include "Common/XferLoad.h"
+#include "Common/XferSave.h"
 
 #include "GameLogic/BitFlags.h"
 #include "GameLogic/ObjectTemplateInfo.h"
 
+#include <algorithm>
 #include <cmath>
 
 using namespace prodtest;
@@ -461,6 +468,200 @@ TEST_CASE("production: a SpawnPoint producer is paid, completes and reports its 
 		reported = reported || e.find("SpawnPointProductionExitUpdate") != std::string::npos;
 	}
 	CHECK(reported);
+}
+
+namespace
+{
+struct SpawnBones : ProjectileLaunchOffsets
+{
+	ObjectID expected = INVALID_ID;
+	Object::ModelConditionBits flags{};
+	int queries = 0, count = 2;
+	// Synthetic proper rotations: +90 degrees about Y, then identity.
+	float transforms[2][12] = {
+		{ 0, 0, 1, 2, 0, 1, 0, 3, -1, 0, 0, 7 },
+		{ 1, 0, 0, -4, 0, 1, 0, 6, 0, 0, 1, 9 }
+	};
+	bool launchOffset(const Object &, int, int, float[12]) override { return false; }
+	int multiLogicalBones(const Object &obj, const std::string &prefix, const Object::ModelConditionBits &bits, int maxBones, float (*out)[12]) override
+	{
+		++queries;
+		CHECK(obj.getID() == expected);
+		CHECK(prefix == "SPAWN");
+		CHECK(bits == flags);
+		CHECK(maxBones == 10);
+		for (int i = 0; i < count && i < 2; ++i)
+		{
+			std::copy(transforms[i], transforms[i] + 12, out[i]);
+		}
+		return count;
+	}
+};
+} // namespace
+
+TEST_CASE("production: SpawnPoint pristine matrices preserve height, orientation, occupancy and snapshot state")
+{
+	ProdWorld f;
+	f.load(kOtherExits);
+	Object *tree = f.make("Tree", f.teamOf("Alice"));
+	auto *exit = dynamic_cast<SpawnPointProductionExitUpdate *>(tree->getObjectExitInterface());
+	REQUIRE(exit);
+	SpawnBones bones;
+	bones.expected = tree->getID();
+	bones.flags = tree->getModelConditionBits();
+	f.logic->combat().setLaunchOffsets(&bones);
+	const Coord3D at{ 300, 400, 50 };
+	const float basis[9] = { 1, 0, 0, 0, 0, -1, 0, 1, 0 }; // +90 degrees about X
+	tree->setTransform(&at, basis);
+	const ThingTemplate *worker = f.w.get("Worker");
+	REQUIRE(exit->reserveDoorForExit(worker, nullptr) == DOOR_1);
+	REQUIRE(exit->bonesInitialized());
+	Object *first = f.make("Worker", f.teamOf("Alice"));
+	exit->exitObjectViaDoor(first, DOOR_1);
+	CHECK(first->getPosition()->x == 302.0f);
+	CHECK(first->getPosition()->y == 393.0f);
+	CHECK(first->getPosition()->z == 53.0f);
+	CHECK(first->getOrientation() == 0x1.921fb6p+0f); // float32 pi/2, from the composed X axis (0,1,0)
+	CHECK(first->isDisabledByType(3));
+	// Initialization caches world-space positions, even if the producer moves.
+	const Coord3D moved{ 900, 800, 700 };
+	tree->setPosition(&moved);
+	REQUIRE(exit->reserveDoorForExit(worker, nullptr) == DOOR_1);
+	Object *second = f.make("Worker", f.teamOf("Alice"));
+	exit->exitObjectViaDoor(second, DOOR_1);
+	CHECK(second->getPosition()->x == 296.0f);
+	CHECK(second->getPosition()->y == 391.0f);
+	CHECK(second->getPosition()->z == 56.0f);
+	CHECK(second->getOrientation() == 0.0f);
+	CHECK(second->isDisabledByType(3));
+	first->setPosition(&moved); // a living occupier moving away does not free its slot
+	exit->unreserveDoorForExit(DOOR_1);
+	exit->releaseLastExit();
+	CHECK(exit->reserveDoorForExit(worker, nullptr) == DOOR_NONE_AVAILABLE);
+	CHECK(bones.queries == 1);
+	CHECK(f.logic->aiCommands().issued().empty());
+	XferSave saved;
+	exit->xfer(saved);
+	StateHasher before;
+	exit->crc(before);
+	f.logic->destroyObject(first);
+	f.frames(1);
+	REQUIRE(exit->reserveDoorForExit(worker, nullptr) == DOOR_1);
+	Object *replacement = f.make("Worker", f.teamOf("Alice"));
+	exit->exitObjectViaDoor(replacement, DOOR_1);
+	StateHasher changed;
+	exit->crc(changed);
+	CHECK(changed.value() != before.value());
+	// Module-level round trip: all cached transforms and occupier IDs travel by bits.
+	XferLoad load(saved.data());
+	exit->xfer(load);
+	CHECK(load.atEnd());
+	StateHasher restored;
+	exit->crc(restored);
+	CHECK(restored.value() == before.value());
+	XferSave again;
+	exit->xfer(again);
+	CHECK(again.data() == saved.data());
+	f.logic->combat().setLaunchOffsets(nullptr);
+	REQUIRE(exit->reserveDoorForExit(worker, nullptr) == DOOR_1); // saved first occupier no longer exists
+	Object *afterLoad = f.make("Worker", f.teamOf("Alice"));
+	exit->exitObjectViaDoor(afterLoad, DOOR_1);
+	CHECK(afterLoad->getPosition()->x == 302.0f);
+	CHECK(afterLoad->getPosition()->y == 393.0f);
+	CHECK(afterLoad->getPosition()->z == 53.0f);
+	CHECK(afterLoad->getOrientation() == 0x1.921fb6p+0f);
+	CHECK(afterLoad->isDisabledByType(3));
+	CHECK(exit->reserveDoorForExit(worker, nullptr) == DOOR_NONE_AVAILABLE);
+	CHECK(f.logic->aiCommands().issued().empty());
+	CHECK(f.logic->report().errors.empty());
+}
+
+TEST_CASE("production: SpawnPoint world translation keeps the target SSE summation order")
+{
+	ProdWorld f;
+	f.load(kOtherExits);
+	Object *tree = f.make("Tree", f.teamOf("Alice"));
+	SpawnBones bones;
+	bones.count = 1;
+	bones.expected = tree->getID();
+	bones.flags = tree->getModelConditionBits();
+	bones.transforms[0][3] = 16777216.0f;
+	bones.transforms[0][7] = 1.0f;
+	bones.transforms[0][11] = -16777216.0f;
+	f.logic->combat().setLaunchOffsets(&bones);
+	const Coord3D at{ 0.25f, 0, 0 };
+	const float basis[9] = { 1, 1, 1, 0, 1, 0, 0, 0, 1 };
+	tree->setTransform(&at, basis);
+	ExitInterface *exit = tree->getObjectExitInterface();
+	REQUIRE(exit->reserveDoorForExit(f.w.get("Worker"), nullptr) == DOOR_1);
+	Object *worker = f.make("Worker", f.teamOf("Alice"));
+	exit->exitObjectViaDoor(worker, DOOR_1);
+	// RW 0x70BEA7..0x70BEC5: (-2^24 + 1) + 2^24 + 0.25 = 1.25.
+	// Summing k0,k1,k2 first would round 2^24 + 1 back to 2^24 and give 0.25.
+	CHECK(worker->getPosition()->x == 1.25f);
+	CHECK(worker->getPosition()->y == 1.0f);
+	CHECK(worker->getPosition()->z == -16777216.0f);
+	f.logic->combat().setLaunchOffsets(nullptr);
+}
+
+TEST_CASE("production: SpawnPoint production waits when full and resumes when an occupier is destroyed")
+{
+	ProdWorld f;
+	f.load(kOtherExits);
+	Object *tree = f.make("Tree", f.teamOf("Alice"));
+	SpawnBones bones;
+	bones.expected = tree->getID();
+	bones.flags = tree->getModelConditionBits();
+	f.logic->combat().setLaunchOffsets(&bones);
+	auto *pu = tree->getProductionUpdate();
+	const auto money = f.alice()->getMoney()->countMoney();
+	for (int i = 0; i < 3; ++i)
+	{
+		REQUIRE(pu->queueCreateUnit(f.w.get("Worker"), -1, pu->requestUniqueUnitID(), -1, false, "", false));
+	}
+	f.frames(100);
+	CHECK(f.alice()->getMoney()->countMoney() == money - 150);
+	REQUIRE(pu->getProductionCount() == 1);
+	// The blocked entry keeps accumulating progress: 60 working frames / 20 build frames.
+	CHECK(pu->firstProduction()->percentComplete == 300.0f);
+	std::vector<Object *> workers;
+	for (Object *o = f.logic->getFirstObject(); o; o = o->getNextObject())
+	{
+		if (o->getTemplate()->getName() == "Worker") workers.push_back(o);
+	}
+	REQUIRE(workers.size() == 2);
+	f.logic->destroyObject(workers.front());
+	f.frames(5);
+	CHECK(pu->getProductionCount() == 0);
+	CHECK(bones.queries == 1);
+	CHECK(f.logic->aiCommands().issued().empty());
+	CHECK(f.logic->report().errors.empty());
+	f.logic->combat().setLaunchOffsets(nullptr);
+}
+
+TEST_CASE("production: SpawnPoint reports missing bone data and rejects an invalid provider count")
+{
+	for (int count : { 0, -1, 11 })
+	{
+		INFO(count);
+		ProdWorld f;
+		f.load(kOtherExits);
+		Object *tree = f.make("Tree", f.teamOf("Alice"));
+		auto *exit = dynamic_cast<SpawnPointProductionExitUpdate *>(tree->getObjectExitInterface());
+		REQUIRE(exit);
+		SpawnBones bones;
+		bones.expected = tree->getID();
+		bones.flags = tree->getModelConditionBits();
+		bones.count = count;
+		f.logic->combat().setLaunchOffsets(&bones);
+		CHECK(exit->reserveDoorForExit(f.w.get("Worker"), nullptr) == DOOR_NONE_AVAILABLE);
+		CHECK(exit->bonesInitialized() == (count == 0)); // retail initializes an empty drawable query
+		CHECK(f.logic->report().errors.size() == 1);
+		CHECK(exit->reserveDoorForExit(f.w.get("Worker"), nullptr) == DOOR_NONE_AVAILABLE);
+		CHECK(f.logic->report().errors.size() == 1);
+		CHECK(bones.queries == (count == 0 ? 1 : 2));
+		f.logic->combat().setLaunchOffsets(nullptr);
+	}
 }
 
 TEST_CASE("production: the lane's stops are reported and have a row in docs/STOPS.md")

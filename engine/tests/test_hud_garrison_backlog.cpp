@@ -27,6 +27,8 @@
 #include "GameLogic/Module/ActiveBody.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/CollideModule.h"
+#include "GameLogic/Module/ProductionExitModules.h"
+#include "GameLogic/Module/SpawnBehavior.h"
 #include "GameLogic/Object/Contain/GarrisonContainRuntime.h"
 #include "GameLogic/Object/Contain/HordeContainRuntime.h"
 #include "GameLogic/Object/Object.h"
@@ -771,4 +773,49 @@ TEST_CASE("garrison backlog: a walking unit asked to move away leaves its line, 
 	CHECK(track[1].back().y == track[0].back().y);
 	const float ex = track[1].back().x - goal.x, ey = track[1].back().y - goal.y;
 	CHECK(std::sqrt(ex * ex + ey * ey) < 10.0f); // tolerance: the locomotor's close-enough distance of the goal
+}
+
+TEST_CASE("spawn exit retail: Mordor barricades receive their initial archers through pristine bones")
+{
+	if (!haveWorld()) return;
+	// Retail INI: the standalone barricade has four archers, the fortress expansion three.
+	for (const auto &entry : { std::make_pair("MordorBarricade", 4u), std::make_pair("MordorFortressBarricadeExpansion", 3u) })
+	{
+		const std::string name = entry.first;
+		INFO(name);
+		Arena a(shared());
+		a.logic.combat().setAutoAcquireEnabled(false);
+		Object *barricade = a.place(name.c_str(), 1, 500.0f, 500.0f);
+		const Coord3D elevated{ 500, 500, 70 };
+		barricade->setPosition(&elevated);
+		auto *exit = dynamic_cast<SpawnPointProductionExitUpdate *>(barricade->getObjectExitInterface());
+		REQUIRE(exit);
+		const auto *spawn = dynamic_cast<const SpawnBehavior *>(SpawnBehaviorInterface::of(*barricade));
+		REQUIRE(spawn);
+		const auto *data = dynamic_cast<const SpawnBehaviorModuleData *>(spawn->getModuleData());
+		REQUIRE(data);
+		CHECK(data->m_spawnNumber == (int)entry.second);
+		CHECK(data->m_initialBurst == (int)entry.second);
+		a.run(20);
+		REQUIRE(exit->bonesInitialized());
+		REQUIRE(spawn->spawns().size() == entry.second);
+		CHECK_FALSE(spawn->isSpawnerActive());
+		std::set<ObjectID> unique;
+		for (ObjectID id : spawn->spawns())
+		{
+			Object *archer = a.logic.findObjectByID(id);
+			REQUIRE(archer);
+			CHECK(unique.insert(id).second);
+			CHECK(archer->getControllingPlayer() == a.player(1));
+			CHECK(archer->isDisabledByType(DISABLED_HELD));
+			// tolerance: an elevated producer's real bone must retain altitude, not snap to the flat synthetic terrain.
+			CHECK(archer->getPosition()->z > 70.0f);
+			MESSAGE(name << " archer " << id << " at " << archer->getPosition()->x << ", " << archer->getPosition()->y << ", " << archer->getPosition()->z);
+		}
+		CHECK(a.logic.report().errors.empty());
+		for (const std::string &stop : a.logic.report().stops)
+		{
+			CHECK(stop.find("[S-3800]") == std::string::npos);
+		}
+	}
 }

@@ -15,6 +15,7 @@
 #include "Common/Team.h"
 #include "Common/Upgrade.h"
 #include "GameLogic/Combat/CombatNames.h"
+#include "GameLogic/Combat/CombatState.h"
 #include "GameLogic/Combat/ObjectWeapons.h"
 #include "GameLogic/AI/TurretAI.h"
 #include "GameLogic/GameMessage.h"
@@ -541,8 +542,11 @@ TEST_CASE("decomp3 S-1301: isAbleToAttack's EMP rule (MordorBarricade), slave at
 	REQUIRE(mordor);
 
 	// SPAWNS_ARE_THE_WEAPONS (MordorBarricade): the CAN_ATTACK status answers, but not while DISABLED_EMP (RW 0x691327 .. 0x691343, before the CAN_ATTACK tests).
-	// Its archers need the drawable's ARCHER_ bones to leave (SpawnPointProductionExitUpdate), which a headless test has not: its spawner stays empty here
+	// Its archers need pristine ARCHER_ bones. LiveGame supplies these even headless;
+	// explicitly remove the provider here to retain the missing-data stop regression.
 	{
+		ProjectileLaunchOffsets *savedBones = logic.combat().launchOffsets();
+		logic.combat().setLaunchOffsets(nullptr);
 		Object *barricade = make(logic, "MordorBarricade", *mordor, nearStart(logic, *mordor, 300.0f, 0.0f));
 		REQUIRE(barricade->isKindOf((unsigned)CombatNames::kindOf("SPAWNS_ARE_THE_WEAPONS")));
 		REQUIRE_FALSE(barricade->isKindOf((unsigned)CombatNames::kindOf("CAN_ATTACK")));
@@ -572,6 +576,7 @@ TEST_CASE("decomp3 S-1301: isAbleToAttack's EMP rule (MordorBarricade), slave at
 			noted = noted || line.find("[S-3800] SpawnBehavior of MordorBarricade") != std::string::npos;
 		}
 		CHECK(noted);
+		logic.combat().setLaunchOffsets(savedBones);
 	}
 
 	// slave attacks (SpawnBehavior::canAnySlavesAttack RW 0x862A4E): a WargLair (no CAN_ATTACK, no weapon) is able while one of its wargs is

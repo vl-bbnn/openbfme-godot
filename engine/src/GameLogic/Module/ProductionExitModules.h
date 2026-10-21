@@ -2,7 +2,8 @@
 // Derived from Command & Conquer Generals Zero Hour, (c) 2001-2003 Electronic Arts Inc., GPL-3.0.
 //
 // DefaultProductionExitUpdate, SupplyCenterProductionExitUpdate and SpawnPointProductionExitUpdate (ZH Source/GameLogic/Object/Update/ProductionExitUpdate/*;
-// B1 .../ProductionExitUpdate/{DefaultProductionExitUpdate,SupplyCenterProductionExitUpdate,SpawnPointProductionExitUpdate}*.cpp), lane PROD-1. The three
+// B1 .../ProductionExitUpdate/{DefaultProductionExitUpdate,SupplyCenterProductionExitUpdate,SpawnPointProductionExitUpdate}*.cpp;
+// B2 Code/GameEngine/Source/GameLogic/Object/Update/ProductionExitUpdate/SpawnPointInitializeBonePositions.cpp), lane PROD-1. The three
 // smaller exit modules of production buildings: retail uses SupplyCenter once (the lumber mill of every faction: the workers), SpawnPoint four times (two Mordor
 // barricades, the Arnor and Elven mallorn trees) and Default never.
 //
@@ -16,9 +17,10 @@
 //     points from the drawable's pristine bones (RW 0x8A7363); reserveDoorForExit RW 0x8A75B4: DOOR_1 while a bone has no occupier, else -1; exitObjectViaDoor
 //     RW 0x8A74B7 puts the object on the first free bone (its world position with Z, its angle), records it as the occupier and holds it (DISABLED_HELD, RW 0x692432);
 //     no AI command is given. Occupiers whose object is gone are freed by RW 0x8A757D.
-// Not ported (stops S-202, S-209): the pathfinder calls, the supply truck AI's setForceWantingState (RW +0x17C), and the bone positions: a drawable's pristine bones
-// (RW 0x672A73) are the client lane's, so a SpawnPoint exit never finds a bone, reserveDoorForExit stays DOOR_NONE_AVAILABLE (as retail does for an object without a
-// drawable) and the module reports it (GameLogic::reportError, once).
+// SpawnPoint reads the canonical ProjectileLaunchOffsets pristine-pose provider using logic-owned condition bits. A missing provider, missing bones or an invalid
+// count still reports S-209 once and cannot produce units; cached world transforms and occupiers participate in the native snapshot and state hash.
+// Not ported (stops S-202, S-209): the pathfinder calls and the supply truck AI's setForceWantingState (RW +0x17C). Pristine-provider fidelity and exact x87
+// angle parity remain separately unproven (S-460, S-081).
 
 #pragma once
 

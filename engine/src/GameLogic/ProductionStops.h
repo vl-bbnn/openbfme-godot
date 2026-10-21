@@ -32,7 +32,8 @@ inline std::vector<std::string> lines()
 		"does not do is its own stops S-252 (upgrades), S-253 (attribute modifier of a bonus) and S-254 (that game kind 3 is the skirmish is not verified, the Living World branches are not ported)",
 		"[S-207] closed: typed prerequisite parsing, satisfaction and help formatting, script/construction gates, and SpawnUnitBehavior's exact UnitName offer "
 		"before command-set lookup (RW 0x794F69 / 0x8BC992) are ported. SpawnUnitBehavior's automatic production update remains separately unported (S-140)",
-		"[S-209] SpawnPointProductionExitUpdate cannot find its spawn bones (the drawable's pristine bones are the client lane's): its reserveDoorForExit stays DOOR_NONE_AVAILABLE and the module reports "
-		"it; the supply truck AI's setForceWantingState of SupplyCenterProductionExitUpdate (RW 0x8A9E70) is not ported" };
+		"[S-209] SpawnPointProductionExitUpdate reads canonical pristine bones and caches their world transforms; without a provider, matching bones or a valid count its "
+		"reserveDoorForExit stays DOOR_NONE_AVAILABLE and the module reports it. Provider fidelity and x87 angle parity remain S-460 / S-081; the supply truck AI's "
+		"setForceWantingState of SupplyCenterProductionExitUpdate (RW 0x8A9E70) is not ported" };
 }
 } // namespace ProductionStops

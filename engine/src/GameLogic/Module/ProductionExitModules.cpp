@@ -14,6 +14,8 @@
 #include "Common/Thing/ModuleFactory.h"
 #include "Common/Thing/ThingTemplate.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/Combat/CombatState.h"
+#include "GameLogic/Combat/WeaponDelivery.h"
 #include "GameLogic/Map/TerrainLogic.h"
 #include "GameLogic/Object/Object.h"
 #include "Libraries/WWVegas/WWMath/quat.h"
@@ -216,16 +218,62 @@ void SpawnPointProductionExitUpdate::registerClass(ModuleFactory &modules)
 	registerExit<SpawnPointProductionExitUpdate, SpawnPointProductionExitUpdateModuleData>(modules, "SpawnPointProductionExitUpdate");
 }
 
-// RW 0x8A7363: the bones come from the drawable's pristine bone positions (RW 0x672A73); no drawable bone data exists in the logic layer (S-209), so the
-// module stays uninitialised exactly as retail's does for an object without a drawable
+// TARGET (S-001 caveat): RW 0x8A7363 queries prefix01.., at most ten pristine
+// matrices; RW 0x70BCE7 composes the full world transform, retaining Z. Its matrix
+// branch sums products in k2,k1,k0 order for every row, then adds translation.
+// DONOR: Open-BFME-2 ac259e57, Code/GameEngine/Source/GameLogic/Object/Update/
+// ProductionExitUpdate/SpawnPointInitializeBonePositions.cpp (GPL-3.0).
+// BFME1's matching function zeros Z; that difference does not apply here.
+// The canonical provider uses logic-owned condition bits and pristine poses,
+// never a live renderer's animation frame (provider deviations remain S-460).
 void SpawnPointProductionExitUpdate::initializeBonePositions()
 {
-	if (!m_reported)
-	{
+	Object *producer = getObject();
+	if (!producer) return;
+	GameLogic &logic = producer->logic();
+	auto report = [&](const std::string &reason) {
+		if (m_reported) return;
 		m_reported = true;
-		getObject()->logic().reportError("SpawnPointProductionExitUpdate of " + getObject()->getTemplate()->getName() + ": the drawable's pristine bones '" + m_data->m_spawnPointBoneName +
-			"' are not available to the logic layer (S-209): no unit can leave this producer");
+		logic.reportError("SpawnPointProductionExitUpdate of " + producer->getTemplate()->getName() + ": " + reason +
+			" '" + m_data->m_spawnPointBoneName + "' (S-209): no unit can leave this producer");
+	};
+	ProjectileLaunchOffsets *provider = logic.combat().launchOffsets();
+	if (!provider)
+	{
+		report("no pristine bone provider for");
+		return; // RW: no drawable leaves initialization pending
 	}
+	float bones[MAX_SPAWN_POINTS][12] = {};
+	const int count = provider->multiLogicalBones(*producer, m_data->m_spawnPointBoneName, producer->getModelConditionBits(), MAX_SPAWN_POINTS, bones);
+	if (count < 0 || count > MAX_SPAWN_POINTS)
+	{
+		report("invalid pristine bone count " + std::to_string(count) + " for");
+		return;
+	}
+	const float *basis = producer->getBasis();
+	const Coord3D &pos = *producer->getPosition();
+	const float translation[3] = { pos.x, pos.y, pos.z };
+	for (int i = 0; i < count; ++i)
+	{
+		float world[12];
+		for (int r = 0; r < 3; ++r)
+		{
+			for (int c = 0; c < 4; ++c)
+			{
+				world[r * 4 + c] = ExitMath::add(ExitMath::add(ExitMath::mul(basis[r * 3 + 2], bones[i][8 + c]),
+					ExitMath::mul(basis[r * 3 + 1], bones[i][4 + c])), ExitMath::mul(basis[r * 3], bones[i][c]));
+				if (c == 3) world[r * 4 + c] = ExitMath::add(world[r * 4 + c], translation[r]);
+			}
+		}
+		m_worldCoordSpawnPoints[i] = Coord3D{ world[3], world[7], world[11] };
+		// RW Get_Z_Rotation 0xB261F0: fld m10; fld m00; fpatan; caller fstp.
+		// The deterministic DD facade is the current fpatan bridge; exact x87
+		// transcendental parity remains unproven (S-081), as for other bone users.
+		m_worldAngleSpawnPoints[i] = (float)SimMath::atan2d(world[4], world[0]);
+	}
+	m_spawnPointCount = count;
+	m_bonesInitialized = true; // RW also finishes initialization when the drawable query returns zero
+	if (count == 0) report("no matching pristine bones for");
 }
 
 // RW 0x8A757D
