@@ -93,6 +93,33 @@ public:
 	// RotWK InGameUI::displayCantBuildMessage (RW 0x69CCEC, BFME2 decomp InGameUIDisplayCantBuild.cpp, tier A): the label of a refused site's code
 	static const char *cantBuildLabel(int legalBuildCode);
 
+	// Optional client diagnostics: a displayed pose can be newer than its legal
+	// verdict (odd client frames only, never while the logic worker is busy).
+	// Record the inputs to actual checks; do not issue an extra legality query.
+	struct Judgement
+	{
+		bool valid = false;
+		unsigned long long sequence = 0;
+		unsigned clientFrame = 0, logicFrame = 0;
+		ObjectID source = INVALID_ID;
+		std::string templateName;
+		Coord3D position{};
+		float angle = 0.0f;
+		unsigned options = 0;
+		LegalBuildCode code = LBC_OK;
+		BuildPlacement::ObjectOverlap overlap;
+	};
+	void setRecordJudgements(bool enabled)
+	{
+		m_recordJudgements = enabled;
+		m_ghostJudgement = {};
+		m_clickJudgement = {};
+		m_judgementSequence = 0;
+	}
+	bool recordsJudgements() const { return m_recordJudgements; }
+	const Judgement &ghostJudgement() const { return m_ghostJudgement; }
+	const Judgement &clickJudgement() const { return m_clickJudgement; }
+
 	struct Stats
 	{
 		unsigned long long placed = 0, refused = 0, cancelled = 0, wallSpans = 0, rightDrags = 0;
@@ -106,6 +133,7 @@ private:
 	MessageDisposition releaseLineBuild(const ThingTemplate &tt, Object &builder);
 	MessageDisposition leftClick(const ClientMessage &msg);
 	void endPlacement();
+	void recordJudgement(Judgement &out, const ThingTemplate &tt, const Coord3D &position, float angle, unsigned options, LegalBuildCode code, const BuildPlacement::ObjectOverlap &overlap);
 	HudContext &m_ctx;
 	ICoord2D m_pointer{};      // the live pointer (RotWK reads Mouse + 0x4F0C; here the last mouse position message)
 	bool m_havePointer = false;
@@ -117,4 +145,7 @@ private:
 	unsigned m_rightDownMs = 0, m_rightUpMs = 0;
 	bool m_rightDown = false, m_rightDragged = false;
 	Stats m_stats;
+	bool m_recordJudgements = false;
+	unsigned long long m_judgementSequence = 0;
+	Judgement m_ghostJudgement, m_clickJudgement;
 };

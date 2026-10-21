@@ -2107,6 +2107,7 @@ Dictionary InGameHudNode::attach(const Ref<RetailFileSystem> &fs, GameWorld *wor
 	InGameHud::Config cfg{ game, *world->hud_world(), afs, d->services, d->shown, d->mouse, d->meta, gameText, shellPlayer ? shellPlayer->window_manager() : nullptr, shellPlayer ? shellPlayer->shell_object() : nullptr };
 	cfg.endGameTimer = [world]() { return world->hud_end_game_timer(); };
 	d->hud = std::make_unique<InGameHud>(cfg);
+	d->hud->input().placeTranslator().setRecordJudgements(OS::get_singleton()->get_environment("OPENBFME_PLACEMENT_DIAGNOSTICS") == "1");
 	d->hud->input().attachCamera(*d->cam);
 	d->hud->setWindowSize((int)window.x, (int)window.y);
 	d->hud->input().commandTranslator().setUseAlternateMouse((bool)options.get("alternate_mouse", false));
@@ -3143,6 +3144,57 @@ Dictionary InGameHudNode::get_placement() const
 	// lane BUILD-5: the rotation anchor (W3DInGameUI::drawPlaceAngle RW 0x48EAD8 draws W_Arrow on the ghost while anchored) and the client frame (the code 9 pulse)
 	p["anchored"] = ui.isPlacementAnchored();
 	p["client_frame"] = (int64_t)ui.clientFrame();
+	const PlaceEventTranslator &place = d->hud->input().placeTranslator();
+	p["diagnostics_enabled"] = place.recordsJudgements();
+	if (place.recordsJudgements())
+	{
+		auto judgement = [](const PlaceEventTranslator::Judgement &j) {
+			Dictionary result;
+			result["valid"] = j.valid;
+			if (j.valid)
+			{
+				result["sequence"] = (int64_t)j.sequence;
+				result["client_frame"] = (int64_t)j.clientFrame;
+				result["logic_frame"] = (int64_t)j.logicFrame;
+				result["source"] = (int64_t)j.source;
+				result["template"] = toGodot(j.templateName);
+				result["x"] = j.position.x;
+				result["y"] = j.position.y;
+				result["z"] = j.position.z;
+				result["angle"] = j.angle;
+				result["options"] = (int64_t)j.options;
+				result["legal"] = (int)j.code;
+				Dictionary overlap;
+				overlap["valid"] = j.overlap.valid;
+				if (j.overlap.valid)
+				{
+					auto footprint = [](const BuildPlacement::Footprint &f) {
+						Dictionary shape;
+						shape["type"] = f.type;
+						shape["major"] = f.major;
+						shape["minor"] = f.minor;
+						shape["x"] = f.x;
+						shape["y"] = f.y;
+						shape["angle"] = f.angle;
+						return shape;
+					};
+					overlap["blocker"] = (int64_t)j.overlap.blocker;
+					overlap["template"] = toGodot(j.overlap.templateName);
+					overlap["options"] = (int64_t)j.overlap.options;
+					overlap["relationship"] = j.overlap.relationship;
+					overlap["immobile"] = j.overlap.immobile;
+					overlap["proposed_shape"] = (int64_t)j.overlap.proposedShape;
+					overlap["blocker_shape"] = (int64_t)j.overlap.blockerShape;
+					overlap["proposed"] = footprint(j.overlap.proposed);
+					overlap["blocking"] = footprint(j.overlap.blocking);
+				}
+				result["overlap"] = overlap;
+			}
+			return result;
+		};
+		p["ghost_judgement"] = judgement(place.ghostJudgement());
+		p["click_judgement"] = judgement(place.clickJudgement());
+	}
 	return p;
 }
 

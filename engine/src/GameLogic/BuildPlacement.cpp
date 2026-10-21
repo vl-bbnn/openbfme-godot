@@ -218,8 +218,12 @@ bool BuildPlacement::footprintsOf(GameLogic &logic, const ThingTemplate &tt, con
 	return true;
 }
 
-bool BuildPlacement::isLocationClearOfObjects(GameLogic &logic, const Coord3D &pos, const ThingTemplate &build, float angle, Object *builder, unsigned options)
+bool BuildPlacement::isLocationClearOfObjects(GameLogic &logic, const Coord3D &pos, const ThingTemplate &build, float angle, Object *builder, unsigned options, ObjectOverlap *overlap)
 {
+	if (overlap)
+	{
+		*overlap = {};
+	}
 	std::vector<Footprint> mine, other;
 	if (!footprintsOf(logic, build, pos, angle, mine))
 	{
@@ -246,11 +250,17 @@ bool BuildPlacement::isLocationClearOfObjects(GameLogic &logic, const Coord3D &p
 			continue; // an object without a geometry (props, markers) takes no ground
 		}
 		bool collide = false;
+		size_t hitMine = 0, hitOther = 0;
 		for (size_t i = 0; i < mine.size() && !collide; ++i)
 		{
 			for (size_t j = 0; j < other.size() && !collide; ++j)
 			{
 				collide = footprintsCollide(mine[i], other[j]);
+				if (overlap && collide)
+				{
+					hitMine = i;
+					hitOther = j;
+				}
 			}
 		}
 		if (!collide)
@@ -258,24 +268,44 @@ bool BuildPlacement::isLocationClearOfObjects(GameLogic &logic, const Coord3D &p
 			continue;
 		}
 		const Relationship rel = builder && builder->getControllingPlayer() && them->getTeam() ? builder->getControllingPlayer()->getRelationship(them->getTeam()) : NEUTRAL;
+		auto refuse = [&](bool immobileBlocker) {
+			if (overlap)
+			{
+				overlap->valid = true;
+				overlap->blocker = them->getID();
+				overlap->templateName = them->getTemplate()->getName();
+				overlap->options = options;
+				overlap->relationship = (int)rel;
+				overlap->immobile = immobileBlocker;
+				overlap->proposedShape = hitMine;
+				overlap->blockerShape = hitOther;
+				overlap->proposed = mine[hitMine];
+				overlap->blocking = other[hitOther];
+			}
+			return false;
+		};
 		if (immobile >= 0 && them->isKindOf((unsigned)immobile))
 		{
 			if (onlyCheckEnemies && builder && rel != ENEMIES)
 			{
 				continue;
 			}
-			return false;
+			return refuse(true);
 		}
 		if (builder && rel == ENEMIES)
 		{
-			return false;
+			return refuse(false);
 		}
 	}
 	return true;
 }
 
-LegalBuildCode BuildPlacement::isLocationLegalToBuild(GameLogic &logic, const Coord3D &pos, const ThingTemplate &build, float angle, unsigned options, Object *builder, Player *player)
+LegalBuildCode BuildPlacement::isLocationLegalToBuild(GameLogic &logic, const Coord3D &pos, const ThingTemplate &build, float angle, unsigned options, Object *builder, Player *player, ObjectOverlap *overlap)
 {
+	if (overlap)
+	{
+		*overlap = {};
+	}
 	(void)player;
 	AIWorld *ai = logic.aiWorld();
 	const PathfindTerrain *terrain = ai ? ai->pathfinder().terrainView() : nullptr;
@@ -293,11 +323,11 @@ LegalBuildCode BuildPlacement::isLocationLegalToBuild(GameLogic &logic, const Co
 	{
 		// no shroud exists yet (VIS-1): every cell is revealed (stop S-301)
 	}
-	if ((options & LLF_NO_OBJECT_OVERLAP) && !isLocationClearOfObjects(logic, pos, build, angle, builder, LLF_NO_OBJECT_OVERLAP))
+	if ((options & LLF_NO_OBJECT_OVERLAP) && !isLocationClearOfObjects(logic, pos, build, angle, builder, LLF_NO_OBJECT_OVERLAP, overlap))
 	{
 		return LBC_OBJECTS_IN_THE_WAY;
 	}
-	if ((options & LLF_NO_ENEMY_OBJECT_OVERLAP) && !isLocationClearOfObjects(logic, pos, build, angle, builder, LLF_NO_ENEMY_OBJECT_OVERLAP))
+	if ((options & LLF_NO_ENEMY_OBJECT_OVERLAP) && !isLocationClearOfObjects(logic, pos, build, angle, builder, LLF_NO_ENEMY_OBJECT_OVERLAP, overlap))
 	{
 		return LBC_OBJECTS_IN_THE_WAY;
 	}

@@ -176,9 +176,29 @@ void PlaceEventTranslator::handleBuildPlacements(bool judge)
 	// RW 0x6A3939: the legality only on odd client frames (TheGameClient vslot 0x7C & 1), at the drawable's site with the slot's angle (RW 0x6A39D7 .. 0x6A3A02)
 	if (judge && (m_ctx.ui.clientFrame() & 1))
 	{
-		const LegalBuildCode code = BuildPlacement::isLocationLegalToBuild(m_ctx.logic, shown, *tt->getFinalOverride(), angle, ghostOptions(), builder, nullptr);
+		BuildPlacement::ObjectOverlap overlap;
+		const LegalBuildCode code = BuildPlacement::isLocationLegalToBuild(m_ctx.logic, shown, *tt->getFinalOverride(), angle, ghostOptions(), builder, nullptr, m_recordJudgements ? &overlap : nullptr);
+		if (m_recordJudgements)
+		{
+			recordJudgement(m_ghostJudgement, *tt->getFinalOverride(), shown, angle, ghostOptions(), code, overlap);
+		}
 		m_ctx.ui.setPlaceLegalCode((int)code);
 	}
+}
+
+void PlaceEventTranslator::recordJudgement(Judgement &out, const ThingTemplate &tt, const Coord3D &position, float angle, unsigned options, LegalBuildCode code, const BuildPlacement::ObjectOverlap &overlap)
+{
+	out.valid = true;
+	out.sequence = ++m_judgementSequence;
+	out.clientFrame = m_ctx.ui.clientFrame();
+	out.logicFrame = m_ctx.logic.getFrame();
+	out.source = m_ctx.ui.placeBuildSource();
+	out.templateName = tt.getName();
+	out.position = position;
+	out.angle = angle;
+	out.options = options;
+	out.code = code;
+	out.overlap = overlap;
 }
 
 void PlaceEventTranslator::endPlacement()
@@ -261,7 +281,12 @@ MessageDisposition PlaceEventTranslator::leftClick(const ClientMessage &msg)
 		return releaseLineBuild(*tt, *builder); // lane QA2-FIX: RW 0x83E911 (a line build skips the legality test, RW 0x83E7FE)
 	}
 	// RW 0x83E80D: isLocationLegalToBuild (slot 0x44) with 0x49F (the restricted-area code 8 of RW 0x707141 is not ported: S-1770)
-	const LegalBuildCode code = BuildPlacement::isLocationLegalToBuild(m_ctx.logic, location, *tt->getFinalOverride(), angle, placeOptions(), builder, nullptr);
+	BuildPlacement::ObjectOverlap overlap;
+	const LegalBuildCode code = BuildPlacement::isLocationLegalToBuild(m_ctx.logic, location, *tt->getFinalOverride(), angle, placeOptions(), builder, nullptr, m_recordJudgements ? &overlap : nullptr);
+	if (m_recordJudgements)
+	{
+		recordJudgement(m_clickJudgement, *tt->getFinalOverride(), location, angle, placeOptions(), code, overlap);
+	}
 	if (code != LBC_OK)
 	{
 		// RW 0x83EA4E: displayCantBuildMessage, RW 0x83EAC5: MiscAudio + 0xE8 (BadBuildingPlacementSound), RW 0x83EB02: setPlacementStart(null); the mode stays

@@ -24,6 +24,7 @@
 #include "GameLogic/ObjectTypes.h"
 #include "GameLogic/AI/AIPathfindHost.h"
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -58,16 +59,31 @@ enum LocationLegalFlags
 
 namespace BuildPlacement
 {
+struct ObjectOverlap;
 // ZH isLocationLegalToBuild(worldPos, build, angle, options, builderObject, player). The builder and the player may be null (a castle layout entry has the castle).
-LegalBuildCode isLocationLegalToBuild(GameLogic &logic, const Coord3D &pos, const ThingTemplate &build, float angle, unsigned options, Object *builder, Player *player);
+LegalBuildCode isLocationLegalToBuild(GameLogic &logic, const Coord3D &pos, const ThingTemplate &build, float angle, unsigned options, Object *builder, Player *player, ObjectOverlap *overlap = nullptr);
 // ZH isLocationClearOfObjects with options NO_OBJECT_OVERLAP or NO_ENEMY_OBJECT_OVERLAP (the exit-width pass is not ported)
-bool isLocationClearOfObjects(GameLogic &logic, const Coord3D &pos, const ThingTemplate &build, float angle, Object *builder, unsigned options);
+bool isLocationClearOfObjects(GameLogic &logic, const Coord3D &pos, const ThingTemplate &build, float angle, Object *builder, unsigned options, ObjectOverlap *overlap = nullptr);
 // the 2D collision of two template geometries at positions and angles (ZH PartitionManager::geomCollidesWithGeom, footprint only)
 struct Footprint
 {
 	int type = 0; // 0 box, 1 sphere, 2 cylinder (PathfindGeometryType)
 	float major = 0.0f, minor = 0.0f;
 	float x = 0.0f, y = 0.0f, angle = 0.0f;
+};
+// Optional observation of the first pair that actually refuses this query in the
+// current port. Copies the already tested footprints; never repeats a collision
+// test or enumerates further blockers. This is not retail geometry parity.
+struct ObjectOverlap
+{
+	bool valid = false;
+	ObjectID blocker = INVALID_ID;
+	std::string templateName;
+	unsigned options = 0;
+	int relationship = 0;
+	bool immobile = false;
+	std::size_t proposedShape = 0, blockerShape = 0;
+	Footprint proposed, blocking;
 };
 bool footprintsCollide(const Footprint &a, const Footprint &b);
 // the footprints of a template at a place: one per ACTIVE shape of its geometry, at the shape's offset turned by `angle` (RW 0xAD14F0; lane PATH-2, S-341: the

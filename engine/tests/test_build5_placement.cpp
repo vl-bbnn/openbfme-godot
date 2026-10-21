@@ -155,6 +155,123 @@ float f32At(const PeImage &pe, std::uint32_t va)
 }
 } // namespace
 
+TEST_CASE("build5 placement diagnostics distinguish a stale ghost verdict from the release check without changing logic")
+{
+	if (!haveWorld("build5 placement diagnostics"))
+	{
+		return;
+	}
+	PlaceRig r(shared());
+	Object *builder = r.startPlacing();
+	r.input->setPlacementDeferred(true);
+	CHECK_FALSE(r.place().recordsJudgements());
+	CHECK_FALSE(r.place().ghostJudgement().valid);
+	CHECK_FALSE(r.place().clickJudgement().valid);
+	r.place().setRecordJudgements(true);
+	if ((r.ui().clientFrame() & 1u) == 0)
+	{
+		r.ui().advanceClientFrame();
+	}
+	const auto hash = r.game->logic().computeStateHash();
+	const auto log = r.input->messageLog();
+	r.place().setLivePointer({ 520, 380 });
+	r.input->placementUpdate();
+	const auto first = r.place().ghostJudgement();
+	REQUIRE(first.valid);
+	CHECK(first.sequence == 1);
+	CHECK(first.clientFrame == r.ui().clientFrame());
+	CHECK(first.logicFrame == r.game->logic().getFrame());
+	CHECK(first.source == builder->getID());
+	CHECK(first.templateName == "GondorBarracks");
+	CHECK(first.options == 0x0Fu);
+	CHECK((int)first.code == r.ui().placeLegalCode());
+	CHECK(first.position.x == r.ui().placeLocation().x);
+	CHECK(first.position.y == r.ui().placeLocation().y);
+	CHECK(first.position.z == r.ui().placeLocation().z);
+	CHECK(first.angle == r.ui().placeAngle());
+
+	// A busy frame moves the displayed pose but must retain the actual old check.
+	const ICoord2D next{ 620, 420 };
+	r.place().setLivePointer(next);
+	r.input->placementUpdate(false);
+	CHECK(r.place().ghostJudgement().sequence == first.sequence);
+	const bool samePose = r.ui().placeLocation().x == first.position.x && r.ui().placeLocation().y == first.position.y;
+	CHECK_FALSE(samePose);
+	r.ui().advanceClientFrame(); // even: the retail schedule does not judge here
+	CHECK((r.ui().clientFrame() & 1u) == 0u);
+	r.input->placementUpdate();
+	CHECK(r.place().ghostJudgement().sequence == first.sequence);
+	r.ui().advanceClientFrame(); // odd, idle: a fresh check of the new pose
+	r.input->placementUpdate();
+	const auto fresh = r.place().ghostJudgement();
+	CHECK(fresh.sequence == 2);
+	CHECK(fresh.code == LBC_OK);
+	CHECK_FALSE(fresh.overlap.valid);
+	CHECK(fresh.position.x == r.ui().placeLocation().x);
+	CHECK(fresh.position.y == r.ui().placeLocation().y);
+	CHECK(r.game->logic().computeStateHash() == hash);
+	CHECK(r.input->messageLog() == log);
+
+	// A controlled immobile blocker appears after the preview's last judgement.
+	std::string error;
+	Object *blocker = r.game->createObject("GondorBarracks", r.game->players().getLocalPlayer()->getPlayerIndex(), fresh.position, 0.0f, &error);
+	REQUIRE_MESSAGE(blocker != nullptr, error);
+	const auto beforeClick = r.game->logic().computeStateHash();
+	r.button(HudInput::Button::Left, true, next.x, next.y);
+	r.button(HudInput::Button::Left, false, next.x, next.y);
+	const auto click = r.place().clickJudgement();
+	REQUIRE(click.valid);
+	CHECK(click.sequence == 3);
+	CHECK(click.options == 0x1Fu);
+	CHECK(click.source == builder->getID());
+	CHECK(click.templateName == "GondorBarracks");
+	CHECK(click.code == LBC_OBJECTS_IN_THE_WAY);
+	REQUIRE(click.overlap.valid);
+	CHECK(click.overlap.blocker == blocker->getID());
+	CHECK(click.overlap.templateName == "GondorBarracks");
+	CHECK(click.overlap.options == (unsigned)LLF_NO_OBJECT_OVERLAP);
+	CHECK(click.overlap.immobile);
+	CHECK(click.overlap.proposedShape == 0);
+	CHECK(click.overlap.blockerShape == 0);
+	// GondorBarracks' first active shape is its primary cylinder (retail INI).
+	CHECK(click.overlap.proposed.type == 2);
+	CHECK(click.overlap.proposed.major == 8.0f);
+	CHECK(click.overlap.blocking.type == 2);
+	CHECK(click.overlap.blocking.major == 8.0f);
+	CHECK(click.overlap.proposed.x == click.position.x);
+	CHECK(click.overlap.proposed.y == click.position.y);
+	CHECK(click.overlap.blocking.x == fresh.position.x);
+	CHECK(click.overlap.blocking.y == fresh.position.y);
+	CHECK(click.logicFrame == r.game->logic().getFrame());
+	CHECK(click.clientFrame == r.ui().clientFrame());
+	CHECK(r.place().ghostJudgement().sequence == fresh.sequence);
+	CHECK(r.place().stats().refused == 1);
+	CHECK(r.place().stats().placed == 0);
+	CHECK(r.count("MSG_DOZER_CONSTRUCT") == 0);
+	CHECK(r.game->logic().computeStateHash() == beforeClick);
+	// The optional result observes an existing check. Its absence gives the same
+	// result, and a later query with no overlap flags clears the previous blocker.
+	const auto logAfterClick = r.input->messageLog();
+	const ThingTemplate &build = *r.game->logic().things().findTemplate("GondorBarracks");
+	const auto plain = BuildPlacement::isLocationLegalToBuild(r.game->logic(), click.position, build, click.angle, click.options, builder, nullptr);
+	BuildPlacement::ObjectOverlap observed;
+	const auto traced = BuildPlacement::isLocationLegalToBuild(r.game->logic(), click.position, build, click.angle, click.options, builder, nullptr, &observed);
+	CHECK(plain == traced);
+	CHECK(observed.blocker == click.overlap.blocker);
+	CHECK(BuildPlacement::isLocationLegalToBuild(r.game->logic(), click.position, build, click.angle, 0, builder, nullptr, &observed) == LBC_OK);
+	CHECK_FALSE(observed.valid);
+	CHECK(observed.blocker == INVALID_ID);
+	CHECK(observed.templateName.empty());
+	CHECK(r.game->logic().computeStateHash() == beforeClick);
+	CHECK(r.input->messageLog() == logAfterClick);
+	r.place().setRecordJudgements(false);
+	CHECK_FALSE(r.place().ghostJudgement().valid);
+	CHECK_FALSE(r.place().clickJudgement().valid);
+	CHECK_FALSE(r.place().clickJudgement().overlap.valid);
+	r.input->placementUpdate();
+	CHECK_FALSE(r.place().ghostJudgement().valid);
+}
+
 TEST_CASE("build5 drag or click: RotWK's right click rule (dragged AND held DragToleranceMS is a drag, anything else a click) and the drag test")
 {
 	MouseSettings m;
