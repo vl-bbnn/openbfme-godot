@@ -239,6 +239,80 @@ TEST_CASE("SPELL-4 retail: InGameUI.ini's radius cursors: every spell book power
 	}
 }
 
+TEST_CASE("SPELL-4 retail: a spell aiming gesture keeps selection and releases capture in both mouse setups")
+{
+	if (!haveWorld("spell4 aiming gesture")) return;
+	SharedWorld &s = shared();
+	for (bool alternate : { false, true })
+	{
+		INFO(alternate);
+		CursorRig r(s);
+		auto ctx = r.hud->enterContext();
+		GameLogic &logic = r.rig.logic();
+		Player &men = *r.rig.local;
+		r.hud->input().commandTranslator().setUseAlternateMouse(alternate);
+		const ThingTemplate *cit = s.world->things().findTemplate("MenFortressCitadel");
+		REQUIRE(cit);
+		Object *citadel = logic.newObject(cit, men.getDefaultTeam(), ObjectStatusMaskType{});
+		REQUIRE(citadel);
+		const Coord3D home{600.0f, 600.0f, 0.0f};
+		citadel->setPosition(&home);
+		citadel->friend_onBuildComplete();
+		const ScienceType science = TheScienceStore->getScienceFromInternalName("SCIENCE_Heal");
+		REQUIRE(science != SCIENCE_INVALID);
+		men.science().grantScience(science);
+		r.rig.game->shroud().revealMapForPlayerPermanently(men.getPlayerIndex());
+		r.frames(20);
+		const auto *b = buttonOf(*r.hud, "Command_SpellBookHeal");
+		REQUIRE(b);
+		REQUIRE(b->power);
+		r.hud->input().ui().selectObject(citadel->getID());
+		const std::vector<ObjectID> selected{citadel->getID()};
+		// SelectionXlat.cpp, RW 0x83C44F..0x83C4B9: a targeting SPELL_BOOK
+		// command suppresses empty-ground deselection. The standalone spell bar
+		// must consume the complete gesture before it reaches that translator.
+		REQUIRE(r.hud->pressSpell(b->index));
+		float lx, ly, hx, hy;
+		REQUIRE(logic.aiWorld());
+		REQUIRE(logic.aiWorld()->pathfinder().terrainView());
+		logic.aiWorld()->pathfinder().terrainView()->getMaximumPathfindExtent(lx, ly, hx, hy);
+		const Coord3D edge{lx + b->power->getRadiusCursorRadius() * 0.5f, 700.0f, 0.0f};
+		r.rig.lookAt(edge);
+		const ICoord2D ep = r.rig.screenOf(edge);
+		r.hud->mouseMove(ep.x, ep.y, 0);
+		r.hud->update(0.034);
+		REQUIRE_FALSE(r.hud->radiusCursor().decal().valid);
+		const size_t before = castsQueued(*r.rig.game);
+		auto click = [&](HudInput::Button button, const ICoord2D &pixel, int time) {
+			r.hud->mouseButton(button, true, pixel.x, pixel.y, 0, time);
+			r.hud->mouseButton(button, false, pixel.x, pixel.y, 0, time + 30);
+			r.hud->update(0.034);
+		};
+		click(HudInput::Button::Left, ep, 1000);
+		CHECK(castsQueued(*r.rig.game) == before);
+		CHECK(r.hud->spellBar().targeting());
+		CHECK(r.hud->input().ui().selected() == selected);
+		click(HudInput::Button::Right, ep, 1100);
+		CHECK_FALSE(r.hud->spellBar().targeting());
+		CHECK(r.hud->input().ui().selected() == selected);
+		REQUIRE(r.hud->pressSpell(b->index));
+		const Coord3D target{800.0f, 700.0f, 0.0f};
+		r.rig.lookAt(target);
+		const ICoord2D tp = r.rig.screenOf(target);
+		r.hud->mouseMove(tp.x, tp.y, 0);
+		r.hud->update(0.034);
+		REQUIRE(r.hud->radiusCursor().decal().valid);
+		click(HudInput::Button::Left, tp, 1200);
+		CHECK(castsQueued(*r.rig.game) == before + 1);
+		CHECK_FALSE(r.hud->spellBar().targeting());
+		CHECK(r.hud->input().ui().selected() == selected);
+		// A following ordinary deselection must work: no stale ignore-up flag.
+		r.rig.lookAt(edge);
+		click(alternate ? HudInput::Button::Left : HudInput::Button::Right, ep, 1300);
+		CHECK(r.hud->input().ui().selected().empty());
+	}
+}
+
 TEST_CASE("SPELL-4 retail: Men of the West: each targeted spell book power aims with its own radius cursor, refuses an invalid spot, casts on a valid one")
 {
 	if (!haveWorld("spell4 men cursor"))

@@ -1249,6 +1249,14 @@ void InGameHud::mouseButton(HudInput::Button button, bool down, int x, int y, in
 	// lane SPELL-2: a spell book power waiting for its target takes the next click on the ground (left: cast there, right: cancel)
 	if (m_spellBar.targeting() && down && !over && !m_store && m_input->ui().getInputEnabled()) // lane OWNERFIX-1: the aim waits while a script has the input off
 	{
+		// SelectionXlat.cpp (RW 0x83C44F..0x83C4B9): SPELL_BOOK targeting
+		// suppresses empty-ground deselection. This standalone bar handles the
+		// press before the translators; give HudInput ownership of its release
+		// too, as for a radial/Apt button, even when the cast ends targeting now.
+		if (button == HudInput::Button::Left || button == HudInput::Button::Right)
+		{
+			m_input->mouseButton(button, down, x, y, keyState, timeMs, doubleClick, true);
+		}
 		if (button == HudInput::Button::Left)
 		{
 			Coord3D world;
