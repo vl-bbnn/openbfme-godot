@@ -67,13 +67,15 @@ void W3DVegetationSway::swayOffsets(Vec3 out[MAX_SWAY_TYPES + 1], bool smoothLoo
 	{
 		Vec3 &o = out[1 + i];
 		o = Vec3();
-		const float offset = smoothLoop && m_curSwayOffset[i] == (float)NUM_SWAY_ENTRIES ? 0.0f : m_curSwayOffset[i];
-		const int minOffset = (int)std::floor(offset);
-		if (minOffset < 0 || minOffset >= NUM_SWAY_ENTRIES || (!smoothLoop && minOffset + 1 >= NUM_SWAY_ENTRIES))
+		// Presentation correction: the retail setter leaves phases 99..100
+		// at zero. Interpolate across the seam rather than snapping upright.
+		const float phase = smoothLoop ? std::fmod(m_curSwayOffset[i], (float)NUM_SWAY_ENTRIES) : m_curSwayOffset[i];
+		const int minOffset = (int)std::floor(phase);
+		if (minOffset < 0 || (!smoothLoop && minOffset + 1 >= NUM_SWAY_ENTRIES) || minOffset >= NUM_SWAY_ENTRIES)
 		{
 			continue;
 		}
-		const float f2 = offset - (float)minOffset;
+		const float f2 = phase - (float)minOffset;
 		const float f1 = 1.0f - f2;
 		const Vec3 &a = m_swayOffsets[minOffset];
 		const Vec3 &b = m_swayOffsets[(minOffset + 1) % NUM_SWAY_ENTRIES];

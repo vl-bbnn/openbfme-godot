@@ -2888,6 +2888,12 @@ func _run_cah() -> void:
 		return
 	await _step(30)
 	_cah_shot("4-appearance")
+	var attributes := "Main.mcAppearanceScreen.Screen.TypeWindow"
+	_cah_invoke(attributes + ":gotoAndPlay", ["_attributes"])
+	await _step(60)
+	_cah_shot("4a-attributes")
+	_cah_invoke(attributes + ":gotoAndPlay", ["_appearance"])
+	await _step(60)
 	# lane CAH-2 r2: a colour picked with the mouse on the shown colour tab's palette (GadgetColorPicker.swf's Click button: the drag writes <tab>Cursor,
 	# the ColorPicker component reads the palette texel, SetColor -> Appearance::On<tab>): the hero's record must change
 	var before: PackedByteArray = _shell.get_create_a_hero_view().get("record", PackedByteArray())
@@ -5448,6 +5454,9 @@ func _on_online_started(start_json: String) -> void:
 
 func _net_open() -> void:
 	var r: Dictionary
+	# lane UBER-1: the player's simulation profile (Options.ini OpenBFMEUberPerformance) before the session opens, as the LAN lobby does: the host announces
+	# it and the joining side's identity must match it
+	_sync_simulation_profile()
 	if _net_host > 0:
 		var slots: Array = []
 		var i := 0
@@ -5460,6 +5469,8 @@ func _net_open() -> void:
 		while slots.size() < 8:
 			slots.append({"state": 1, "name": "", "faction": "", "color": -1, "start_pos": -1, "team": -1, "player_template": -1}) # SLOT_CLOSED
 		var message := {"mode": "skirmish", "map": _map_key, "map_crc": 0, "map_size": 0, "seed": _seed if _seed != 0 else Time.get_ticks_msec(), "starting_cash": 1500, "slots": slots}
+		if _world.simulation_profile() == "uber":
+			message["simulation_profile"] = 1 # lane UBER-1: the game it starts carries the profile (absent: Faithful; GodotGameStart reads it), as the lobby's identity does
 		r = _world.net_host(_net_host, message, _net_run_ahead, _net_crc)
 	else:
 		r = _world.net_join(_net_join, _net_name)

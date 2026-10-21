@@ -5,6 +5,7 @@
 #include "HudTestUtil.h"
 
 #include "Common/PlayerTemplate.h"
+#include "Common/ModelState.h"
 #include "GameClient/GUI/ShellServices.h"
 #include "GameClient/InGameHud.h"
 #include "GameClient/PalantirCommandUI.h"
@@ -108,6 +109,32 @@ struct PalantirRig
 		return s ? *s : std::string();
 	}
 };
+// The panel and all six disabled empty contents must remain visible both at
+// startup and after a selection transition.
+void checkEmptyPanel(PalantirRig &h)
+{
+	AptPalantir *p = h.hud->palantir();
+	REQUIRE(p);
+	REQUIRE(h.clip("CommandButtons"));
+	CHECK(h.clip("CommandButtons")->visible);
+	CHECK(h.label("CommandButtons") == "_show");
+	CHECK(h.hud->controlBar().palantirButtons().empty());
+	int emptyFrames = 0;
+	for (const auto &frame : p->buttonFrames()) {
+	 std::string path=frame.path;
+	 if (path.rfind("_level",0)==0) path=path.substr(path.find('.')+1);
+	 if (path.rfind("CommandButtons.",0)!=0) continue;
+	 auto *content=h.clip(path+".content");
+	 REQUIRE_MESSAGE(content,path);
+	 const int disabled=content->labelFrame("_disabled");
+	 int next=content->labelFrame("_cantAfford");
+	 CHECK(content->frame>=disabled); // tolerance: any frame in the disabled timeline animation is valid.
+	 CHECK(content->frame<next); // tolerance: the disabled animation must not enter the next state.
+	 CHECK(content->visible);
+	 ++emptyFrames;
+	}
+	CHECK(emptyFrames==6);
+}
 } // namespace
 
 TEST_CASE("hud2 palantir: nothing selected; the good side's PlayerMagic button shows the Evenstar, the command interface shows an empty portrait and the globe clip")
@@ -128,6 +155,7 @@ TEST_CASE("hud2 palantir: nothing selected; the good side's PlayerMagic button s
 	CHECK(h.playerMagicDraws(205));
 	CHECK_FALSE(h.playerMagicDraws(162));
 	// the command interface follows the control bar's context from the first update on (PalantirCommandUI 0x93085F), the portrait clip has no image
+	checkEmptyPanel(h);
 	CHECK(p->commandInterfaceShown());
 	CHECK(h.label("CommandUI") == "_show");
 	CHECK(p->portraitShown().empty());
@@ -195,6 +223,11 @@ TEST_CASE("hud2 palantir: a selected unit and a selected building show their Sel
 	CHECK(img->image == unitPortrait);
 	CHECK(p->commandInterfaceShown());
 
+	// Deselecting a unit must retain the six empty frames and their parent panel.
+	h.hud->input().ui().deselectAll(false);
+	h.frames(20);
+	checkEmptyPanel(h);
+
 	// a building
 	h.hud->input().ui().deselectAll(false);
 	h.hud->input().ui().selectObject(b->getID());
@@ -219,6 +252,7 @@ TEST_CASE("hud2 palantir: a selected unit and a selected building show their Sel
 	CHECK(p->portraitShown().empty());
 	CHECK(p->imageForClip(p->portraitKey(), "") == nullptr);
 	CHECK(p->commandInterfaceShown());
+	checkEmptyPanel(h);
 	// HUD-1's command buttons retry CreateContent / SetState until their clips' frames define them; the calls of this lane never fail
 	for (const std::string &e : p->callErrors())
 	{
@@ -231,4 +265,31 @@ TEST_CASE("stop S-760: the Palantir portrait reports the branches it does not po
 	const std::vector<std::string> stops = PalantirCommandUI::acceptanceStops();
 	REQUIRE(stops.size() == 1);
 	CHECK(stops[0].rfind("[S-760]", 0) == 0);
+}
+
+TEST_CASE("hud2 palantir: custom heroes use their model-state portraits rather than the generic Wanderer")
+{
+	if (!haveWorld("hud2 custom hero portrait"))
+	{
+		return;
+	}
+	PalantirRig h(shared());
+	Object *maiden = h.rig.make("CreateAHero", 2800, 1400);
+	Object *captain = h.rig.make("CreateAHero", 3000, 1400);
+	REQUIRE(maiden);
+	REQUIRE(captain);
+	// Independent retail CreateAHeroModels.inc expectations: CREATE_A_HERO_02
+	// names CPShieldMaiden; CREATE_A_HERO_00 names CPCaptainofGondor.
+	maiden->setModelConditionState(ModelCondition::indexOf("CREATE_A_HERO_02"), true);
+	captain->setModelConditionState(ModelCondition::indexOf("CREATE_A_HERO_00"), true);
+	CHECK(PalantirCommandUI::objectPortrait(*maiden) == "CPShieldMaiden");
+	CHECK(PalantirCommandUI::objectPortrait(*captain) == "CPCaptainofGondor");
+	h.hud->input().ui().selectObject(maiden->getID());
+	h.frames(10);
+	CHECK(h.hud->palantir()->portraitShown() == "CPShieldMaiden");
+	// Both objects have the same template, but different portraits: do not
+	// skip the second object using the ordinary template comparison cache.
+	h.hud->input().ui().selectObject(captain->getID());
+	h.frames(10);
+	CHECK(h.hud->palantir()->portraitShown() == h.rig.local->getPlayerTemplate()->m_multiSelectionPortrait);
 }
