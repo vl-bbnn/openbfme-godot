@@ -50,6 +50,9 @@ public:
 	// that AptMenuPlayer (shell mode); it keeps stepping its window manager and draws, the HUD feeds the camera and the input and draws the native components.
 	Dictionary attach(const Ref<RetailFileSystem> &fs, GameWorld *world, Camera3D *camera, AptMenuPlayer *player, const String &local_player, const Dictionary &options);
 	bool is_ready() const;
+	// Opt-in presentation preparation: compile the actual globe composite in this
+	// viewport without presenting a frame. Requires held logic; reports frame/hash.
+	Dictionary prepare_globe_pipeline();
 
 	// the objects selected on the client (newest first) and the logic's selection of the local player
 	Array get_selection() const;

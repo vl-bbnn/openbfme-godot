@@ -2236,6 +2236,20 @@ func _enter_game(rep: Dictionary) -> void:
 		for o in rep.start.starting_objects:
 			print("GAME starting object: ", JSON.stringify(_world.get_object(o.id)))
 	_install_hud(rep)
+	if OS.get_cmdline_user_args().has("--prepare-globe-pipeline"):
+		_world.set_auto_advance(false)
+		var globe_started := Time.get_ticks_msec()
+		if _hud == null:
+			_fail("globe preparation requires an attached HUD")
+			return
+		var globe_prepared: Dictionary = _hud.prepare_globe_pipeline()
+		globe_prepared["ready_us"] = Time.get_ticks_usec()
+		globe_prepared["total_ms"] = Time.get_ticks_msec() - globe_started
+		print("GAME GLOBE PIPELINE READY ", JSON.stringify(globe_prepared))
+		if not globe_prepared.ok:
+			_fail("globe pipeline preparation: " + JSON.stringify(globe_prepared))
+			return
+		_world.set_auto_advance(true)
 	# lane END-1: GuiFX.apt (the end screen's movie) is loaded with the game, so ShowEndGame finds it
 	var gfx: Dictionary = _shell.end_game_screen({"kind": "preload"})
 	print("GAME GuiFX for the end screen: level %d %s" % [gfx.get("level", -1), str(gfx.get("error", ""))])

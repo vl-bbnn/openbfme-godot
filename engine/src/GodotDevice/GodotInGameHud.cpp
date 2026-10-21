@@ -1275,6 +1275,7 @@ void InGameHudNode::_bind_methods()
 	ClassDB::bind_method(D_METHOD("setup", "fs", "world", "camera", "local_player", "options"), &InGameHudNode::setup, DEFVAL(Dictionary()));
 	ClassDB::bind_method(D_METHOD("attach", "fs", "world", "camera", "player", "local_player", "options"), &InGameHudNode::attach, DEFVAL(Dictionary()));
 	ClassDB::bind_method(D_METHOD("is_ready"), &InGameHudNode::is_ready);
+	ClassDB::bind_method(D_METHOD("prepare_globe_pipeline"), &InGameHudNode::prepare_globe_pipeline);
 	ClassDB::bind_method(D_METHOD("get_selection"), &InGameHudNode::get_selection);
 	ClassDB::bind_method(D_METHOD("get_logic_selection"), &InGameHudNode::get_logic_selection);
 	ClassDB::bind_method(D_METHOD("get_message_log"), &InGameHudNode::get_message_log);
@@ -1885,6 +1886,64 @@ InGameHudNode::~InGameHudNode()
 bool InGameHudNode::is_ready() const
 {
 	return d->ready;
+}
+
+Dictionary InGameHudNode::prepare_globe_pipeline()
+{
+	Dictionary out;
+	Array errors;
+	out["ok"] = false;
+	out["errors"] = errors;
+	if (!d->ready || !d->world || !d->world->is_logic_held())
+	{
+		errors.push_back("globe pipeline preparation requires an attached HUD and held logic");
+		return out;
+	}
+	const int64_t frame = d->world->get_frame(), hash = d->world->get_state_hash();
+	out["frame_before"] = frame;
+	out["hash_before"] = hash;
+	if (!d->ensureGlobe())
+	{
+		for (const std::string &error : d->drawErrors) errors.push_back(String::utf8(error.c_str()));
+		return out;
+	}
+	// New globe instancers have not had their first _process yet. Populate their
+	// existing palettes and visible draws before submitting the preparation frame.
+	// update_now does not advance their presentation clock or the simulation.
+	Array layers;
+	for (HudDevice::GlobeLayer *layer : { &d->globeAdd, &d->globeMul })
+	{
+		Dictionary readiness;
+		readiness["before"] = layer->inst->get_stats();
+		layer->inst->update_now();
+		readiness["after"] = layer->inst->get_stats();
+		layers.push_back(readiness);
+	}
+	out["layers"] = layers;
+	// Reuse the live material and the real viewport's attachment format. A tiny
+	// temporary draw exercises the same screen-read composite as drawPlaceholder;
+	// force_draw(false) submits it without swapping the displayed frame.
+	RenderingServer *rs = RenderingServer::get_singleton();
+	const Rect2 rect(Vector2(), Vector2(1, 1));
+	const RID item = rs->canvas_item_create();
+	rs->canvas_item_set_parent(item, get_canvas_item());
+	rs->canvas_item_set_copy_to_backbuffer(item, true, rect);
+	rs->canvas_item_set_material(item, d->globeMaterial->get_rid());
+	rs->canvas_item_add_texture_rect(item, rect, d->globeAdd.view->get_texture()->get_rid());
+	rs->force_sync();
+	rs->force_draw(false, 0.0);
+	rs->force_sync();
+	rs->free_rid(item);
+	out["material_rid"] = (int64_t)d->globeMaterial->get_rid().get_id();
+	out["shader_rid"] = (int64_t)d->globeShader->get_rid().get_id();
+	out["frame_after"] = d->world->get_frame();
+	out["hash_after"] = d->world->get_state_hash();
+	const bool unchanged = d->world->get_frame() == frame && d->world->get_state_hash() == hash;
+	out["simulation_unchanged"] = unchanged;
+	if (!unchanged) errors.push_back("globe pipeline preparation changed simulation state");
+	for (const std::string &error : d->drawErrors) errors.push_back(String::utf8(error.c_str()));
+	out["ok"] = errors.is_empty();
+	return out;
 }
 
 Dictionary InGameHudNode::setup(const Ref<RetailFileSystem> &fs, GameWorld *world, Camera3D *camera, const String &local_player, const Dictionary &options)
