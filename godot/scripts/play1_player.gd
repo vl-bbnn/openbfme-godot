@@ -2,7 +2,7 @@
 ## buttons, the wheel, keys), the path a player's mouse takes: no QA harness command and no HUD shortcut. game.gd runs it after the start with
 ## --play1=<scenario>[,<scenario>...] (with --auto); each scenario prints "PLAY1 <scenario>: ok" or "PLAY1 <scenario>: FAIL <why>", screenshots go to --screens as
 ## play1-<name>.png, and "PLAY1 RESULT: <n> ok, <m> failed" ends the run.
-##   orders    a left click selects one of the local units, a right click on the ground orders the move (MSG_DO_MOVETO), the move hint is drawn there,
+##   orders    a left click selects one of the local units, the active mouse scheme's order button sends MSG_DO_MOVETO, the move hint is drawn there,
 ##             the unit walks toward the point
 ##   palantir  the three buttons above the minimap (the Palantir's options row) are clicked one after the other; what each opened is reported
 ##   powers    the Palantir's powers button opens SpellStore.apt; a click on a power that can be bought, RESET, a buy and ACCEPT; a click beside the
@@ -44,6 +44,11 @@
 ##             The pointer is drawn into the shots from the HUD's own cursor image (a capture omits the OS pointer)
 ##   portraits (lane UI-4) a builder, a building, a hero and a horde of the local player, each selected with a left click: the Palantir's portrait
 ##             clip (CommandUI.Portrait) must draw the selection's SelectPortrait (PalantirCommandUI, RW 0x92FE33); play1-portrait-<kind>.png
+##   qa_deselect the QA player's cleanup cancels a builder's placement, then deselects on verified terrain; repeat with --classic-mouse and --alternate-mouse
+##   qa_buttons  the QA player clicks a builder's visible Apt button and a fortress's native unit bubble; placement starts and a new unit is produced
+##   qa_wall     build a hub, click its native radial BeginWallSpan, and verify every planned wall tile appears and finishes; both mouse schemes
+##   qa_economy  the QA placement path builds a farm and barracks; a refused placement message must not be mistaken for a later unit queue failure
+##   qa_heal     naturally produced soldiers, explicit test-hook wounds, no-cast control and valid cursor, then Heal through the actual spell slot
 extends RefCounted
 
 var game: Node
@@ -72,6 +77,472 @@ func run(p_game: Node, scenarios: PackedStringArray) -> void:
 
 
 # ---- input -----------------------------------------------------------------------------------------------------------------------------------------------
+
+func _heal_slot_pixel(sb: Dictionary, index: int) -> Vector2:
+	var path := str(sb.get("path", ""))
+	if path.begins_with("_level"):
+		path = path.substr(path.find(".") + 1)
+	for candidate in ["%s.Spell%d", "%s.Spells.Spell%d", "%s.Buttons.Spell%d", "%s.Spell%dClip"]:
+		var pixel := palantir_button(candidate % [path, index + 1])
+		if pixel.x >= 0:
+			return pixel
+	return Vector2(-1, -1)
+
+
+func _scenario_qa_heal() -> String:
+	var qa: Node = load("res://scripts/qa_player.gd").new()
+	game.add_child(qa)
+	qa.setup(game, world, hud, game._local_name, {})
+	var result := await _qa_heal_run(qa)
+	qa.queue_free()
+	return result
+
+
+func _qa_heal_run(qa: Node) -> String:
+	# A retail-data regression, not a claim that test-hook damage is a combat match.
+	# test_spell_heal.cpp / test_spell4_buffs.cpp pin HealAmount=0.6, radius=200,
+	# GondorFighter max health=200 and HealingBuff/EXHealbuff on the 15 soldiers.
+	var preparation := await _scenario_qa_economy()
+	if not preparation.is_empty():
+		return "production preparation: " + preparation
+	var magic := palantir_button("PalantirButtons.Buttons.PlayerMagic")
+	if magic.x < 0:
+		return "no PlayerMagic button"
+	await click(magic)
+	await game._wait_seconds(2.0)
+	var store := store_state()
+	var heal: int = store.get("sciences", []).find("SCIENCE_Heal")
+	if not store.get("open", false) or heal < 0 or store.states[heal] != "_active":
+		return "Heal is not purchasable with the starting points: " + JSON.stringify(store)
+	await click(shell_button(store.level, "SpellStore.Buttons.Spell%d" % (heal + 1)))
+	await game._wait_seconds(1.5)
+	if store_state().states[heal] == "_active":
+		return "the Heal purchase click did not register"
+	await click(shell_button(store.level, "SpellStore.Buttons.ButtonsMain.Accept"))
+	await game._wait_seconds(3.0)
+	var sb: Dictionary = hud.get_spellbook_state()
+	var slot: int = sb.get("slots", []).find("_up")
+	if store_state().get("open", true) or slot < 0:
+		return "Heal was not accepted into a ready spell slot"
+	var slot_pixel := _heal_slot_pixel(sb, slot)
+	if slot_pixel.x < 0:
+		return "the actual Heal slot could not be located"
+	await click(slot_pixel)
+	await game._step(4)
+	if hud.get_spellbook_state().get("target_power", "") != "SpellBookHeal":
+		return "the purchased slot did not target SpellBookHeal"
+	print("PLAY1 qa_heal shroud: ", JSON.stringify(world.get_shroud_report()))
+	# test_spell4_cursor.cpp pins the invalid location beside the pathfinding
+	# boundary. TerrainPathfindSource::getMaximumPathfindExtent has origin (0,0);
+	# use half the actual cursor radius on that edge, not an assumed shroud rule.
+	var aim: Dictionary = hud.get_spellbook_state()
+	var edge := Vector2(float(aim.radius) * 0.5, 700.0)
+	await look_by_radar(edge)
+	var edge_pixel := to_pixel(edge.x, edge.y)
+	if not on_screen(edge_pixel):
+		return "the edge control is outside usable viewport terrain"
+	await move_to(edge_pixel)
+	await game._step(4)
+	aim = hud.get_spellbook_state()
+	var invalid_cursor: Dictionary = aim.get("radius_cursor", {})
+	print("PLAY1 qa_heal edge target: ", JSON.stringify(aim))
+	if hud.get_state().get("over_gui", true) or not invalid_cursor.get("active", false) or not invalid_cursor.get("visible", false) or invalid_cursor.get("valid", true) or invalid_cursor.x <= 0.0 or invalid_cursor.x >= float(aim.radius):
+		return "the edge control is not an observed invalid, non-GUI target"
+	var refused_before: int = hud.get_message_log().size()
+	var aim_selection: Array = hud.get_selection().duplicate()
+	await qa._click_world(edge, 1, true)
+	await game._step(5)
+	aim = hud.get_spellbook_state()
+	print("PLAY1 qa_heal edge refused: messages %s, targeting %s, slot %s, probe %s, selection_after %s" % [JSON.stringify(messages_since(refused_before)), aim.targeting, aim.slots[slot], JSON.stringify(qa._last_spell_target), JSON.stringify(hud.get_selection())])
+	# Check casts separately from other UI traffic (the QA counter regression).
+	# SelectionXlat's SPELL_BOOK gate also preserves selection while aiming;
+	# the standalone bar must own the complete mouse gesture to preserve it here.
+	if messages_since(refused_before).any(func(m): return str(m).begins_with("MSG_DO_SPECIAL_POWER")) or not aim.targeting or aim.slots[slot] != "_up":
+		return "the invalid edge click did not retain Heal without a power command"
+	if qa._spell_cast_observed(refused_before, slot) or not qa._spell_target_refused(slot):
+		return "QA misclassified the invalid target or unrelated selection traffic"
+	if hud.get_selection() != aim_selection:
+		return "the rejected spell gesture changed selection"
+	if qa._last_spell_target.get("over_gui", true) or qa._last_spell_target.get("radius_cursor", {}).get("valid", true):
+		return "the invalid target probe did not capture the actual pre-press rejection"
+	await click(edge_pixel, MOUSE_BUTTON_RIGHT)
+	if hud.get_spellbook_state().get("targeting", true):
+		return "right-click did not cancel Heal targeting"
+	if hud.get_selection() != aim_selection:
+		return "the spell cancel gesture changed selection"
+	var hordes := own_objects().filter(func(o): return o.template == "GondorFighterHorde")
+	if hordes.size() != 1:
+		return "expected exactly the naturally produced GondorFighterHorde"
+	var members: Array = []
+	var until := Time.get_ticks_msec() + 10000
+	while Time.get_ticks_msec() < until:
+		members = world.get_object(hordes[0].id).get("members", [])
+		if members.size() == 15:
+			break
+		await game._step(1)
+	if members.size() != 15:
+		return "the produced horde did not contain its 15 soldiers"
+	var target := Vector2()
+	for id in members:
+		var soldier: Dictionary = world.get_object(id)
+		if soldier.template != "GondorFighter" or soldier.owner != game._local_name or soldier.max_health != 200.0 or soldier.health != 200.0:
+			return "unexpected soldier preparation: " + JSON.stringify(soldier)
+		target += Vector2(soldier.x, soldier.y) / float(members.size())
+	await look_by_radar(target)
+	var pixel := to_pixel(target.x, target.y)
+	if not on_screen(pixel):
+		return "the own horde is not on usable terrain in the viewport"
+	for id in members:
+		var soldier: Dictionary = world.get_object(id)
+		if Vector2(soldier.x, soldier.y).distance_to(target) >= 180.0:
+			return "a soldier is too far from the intended Heal centre"
+		var wound: Dictionary = world.debug_damage_object(id, 150.0, 0)
+		print("PLAY1 qa_heal TEST HOOK wound: id %d, %s" % [id, JSON.stringify(wound)])
+		if not wound.get("ok", false) or wound.get("health", -1.0) != 50.0:
+			return "the explicit test-hook wound did not leave exactly 50 health"
+	var control_frame: int = world.get_frame() + 8
+	until = Time.get_ticks_msec() + 5000
+	while world.get_frame() < control_frame and Time.get_ticks_msec() < until:
+		await game._step(1)
+	if world.get_frame() < control_frame:
+		return "the no-cast control did not advance eight logic frames"
+	for id in members:
+		if world.get_object(id).health != 50.0:
+			return "health changed during the no-cast control"
+	if world.get_buff_state().get("buffs", []).any(func(b): return members.has(b.object) and b.thing == "HealingBuff"):
+		return "the no-cast control already has a HealingBuff"
+	print("PLAY1 qa_heal control: 15 soldiers at 50/200, eight logic frames, no healing buff")
+	await click(slot_pixel)
+	await move_to(pixel)
+	await game._step(4)
+	sb = hud.get_spellbook_state()
+	var cursor: Dictionary = sb.get("radius_cursor", {})
+	print("PLAY1 qa_heal valid target: ", JSON.stringify(sb))
+	if sb.get("target_power", "") != "SpellBookHeal" or not cursor.get("active", false) or not cursor.get("visible", false) or not cursor.get("valid", false) or hud.get_state().get("over_gui", true) or world.get_shroud_status_at(cursor.x, cursor.y) != 0:
+		return "Heal did not show a valid clear-terrain cursor over the own horde"
+	var before: int = hud.get_message_log().size()
+	await qa._click_world(target, 1, true)
+	var health_frame := -1
+	var buff_frame := -1
+	until = Time.get_ticks_msec() + 5000
+	while Time.get_ticks_msec() < until:
+		if health_frame < 0 and members.all(func(id): return world.get_object(id).health == 170.0):
+			health_frame = world.get_frame()
+		var pending: Array = world.get_buff_state().get("buffs", []).filter(func(b): return members.has(b.object) and b.thing == "HealingBuff")
+		if buff_frame < 0 and pending.size() == 15:
+			buff_frame = world.get_frame()
+		# The logic health can be visible before the next client FX/HUD refresh.
+		# Observe both, rather than sampling the client in that intermediate frame.
+		if health_frame >= 0 and buff_frame >= 0 and hud.get_spellbook_state().get("slots", [])[slot] != "_up":
+			break
+		await game._step(1)
+	var sent := messages_since(before)
+	var buffs: Dictionary = world.get_buff_state()
+	var healed: Array = members.map(func(id): return {"id": id, "health": world.get_object(id).health})
+	var on_members: Array = buffs.get("buffs", []).filter(func(b): return members.has(b.object) and b.thing == "HealingBuff" and b.model.to_upper() == "EXHEALBUFF")
+	print("PLAY1 qa_heal effect: frame %d, messages %s, health %s, buffs %s, slots %s" % [world.get_frame(), JSON.stringify(sent), JSON.stringify(healed), JSON.stringify(buffs), JSON.stringify(hud.get_spellbook_state().get("slots", []))])
+	print("PLAY1 qa_heal refresh: health_frame %d, buff_frame %d, FX %s" % [health_frame, buff_frame, JSON.stringify(world.get_fx_report())])
+	print("PLAY1 qa_heal valid probe: ", JSON.stringify(qa._last_spell_target))
+	shot("qa-heal-effect")
+	if sent.filter(func(m): return str(m).begins_with("MSG_DO_SPECIAL_POWER_AT_LOCATION")).size() != 1:
+		return "the valid terrain click did not send exactly one location power command"
+	if not qa._spell_cast_observed(before, slot) or qa._spell_target_refused(slot):
+		return "QA did not classify the valid cast independently of its target-refusal control"
+	if hud.get_selection() != aim_selection:
+		return "the successful spell gesture changed selection"
+	if not healed.all(func(o): return o.health == 170.0):
+		return "Heal did not restore exactly 120 health to each of the 15 wounded soldiers"
+	if qa._last_spell_target.get("over_gui", true) or not qa._last_spell_target.get("radius_cursor", {}).get("valid", false) or qa._last_spell_target.get("target_power", "") != "SpellBookHeal":
+		return "the valid target probe did not capture the pre-press Heal state"
+	if on_members.size() != 15 or not buffs.get("errors", []).is_empty():
+		return "Heal did not put an error-free HealingBuff on every soldier"
+	if hud.get_spellbook_state().get("slots", [])[slot] == "_up":
+		return "Heal did not start recharging"
+	return ""
+
+
+func _scenario_qa_wall() -> String:
+	var qa: Node = load("res://scripts/qa_player.gd").new()
+	game.add_child(qa)
+	qa.setup(game, world, hud, game._local_name, {})
+	var speed: float = world.get_time_scale()
+	world.set_time_scale(4.0) # construction wait only; this scenario is not a performance benchmark
+	var result := await _qa_wall_run(qa)
+	print("PLAY1 qa_wall: alternate %s, counts %s, issues %s" % [game._alternate_mouse_setup(), JSON.stringify(qa._counts), JSON.stringify(qa._issues)])
+	if not qa._issues.is_empty():
+		result += "; QA issues: " + JSON.stringify(qa._issues)
+	qa.queue_free()
+	world.set_time_scale(speed)
+	return result
+
+
+func _qa_wall_run(qa: Node) -> String:
+	var worker := await select_own(func(o): return not o.structure and is_worker(str(o.template)))
+	if worker.is_empty():
+		return "no builder could be selected"
+	var build := command_button(func(b): return b.command == "DOZER_CONSTRUCT" and str(b.template).to_lower().contains("wall") and int(b.state) == 1)
+	if build.is_empty():
+		return "the builder has no available wall hub button"
+	var known: Array = own_objects().map(func(o): return o.id)
+	var before: int = hud.get_message_log().size()
+	if not await qa._press(build) or not hud.get_placement().get("placing", false):
+		return "the builder's presented wall button did not enter placement"
+	if not await place_near(Vector2(worker.x, worker.y)):
+		return "no legal site for the initial hub"
+	var hub: Dictionary = {}
+	var until := Time.get_ticks_msec() + 60000
+	while Time.get_ticks_msec() < until:
+		for o in own_objects():
+			if not known.has(o.id) and o.template == build.template:
+				hub = o
+		if not hub.is_empty() and not world.get_object(hub.id).get("under_construction", true):
+			break
+		await game._wait_seconds(0.25)
+	print("PLAY1 qa_wall hub: %s, messages %s" % [JSON.stringify(hub), JSON.stringify(messages_since(before))])
+	if hub.is_empty() or world.get_object(hub.id).get("under_construction", true):
+		return "the initial hub did not finish construction"
+	await qa._deselect()
+	await look_by_radar(Vector2(hub.x, hub.y))
+	if not await select_object(hub):
+		return "the completed hub could not be selected"
+	var span := command_button(func(b): return str(b.name).ends_with("BeginWallSpan") and int(b.state) == 1)
+	if span.is_empty():
+		return "the completed hub has no available BeginWallSpan: " + button_list()
+	var apt: Dictionary = hud.find_button_window(span.frame)
+	print("PLAY1 qa_wall button: %s, Apt %s, presented %s" % [JSON.stringify(span), JSON.stringify(apt), JSON.stringify(qa._button_point(span))])
+	var presses: int = hud.get_hud6_state().get("radial", {}).get("presses", 0)
+	if not await qa._press(span):
+		return "the radial wall span button was not hittable"
+	if int(hud.get_hud6_state().get("radial", {}).get("presses", 0)) != presses + 1:
+		return "the radial wall span button did not take exactly one press"
+	var placement: Dictionary = hud.get_placement()
+	if not placement.get("placing", false) or int(placement.get("source", -1)) != int(hub.id):
+		return "the radial wall command did not start placement from the selected hub: " + JSON.stringify(placement)
+	var destination := Vector2(-1, -1)
+	var planned: Array = []
+	for distance in [120.0, 160.0, 200.0]:
+		for direction in 12:
+			var point: Vector2 = Vector2(hub.x, hub.y) + Vector2.from_angle(TAU * direction / 12.0) * float(distance)
+			var pixel := to_pixel(point.x, point.y)
+			if not on_screen(pixel):
+				continue
+			await move_to(pixel)
+			await game._step(4)
+			var icons: Array = ghost_state().get("icons", [])
+			if icons.size() >= 2 and icons.all(func(i): return int(i.code) == 0 and int(i.instances) > 0):
+				destination = pixel
+				planned = icons.duplicate(true)
+				break
+		if destination.x >= 0:
+			break
+	print("PLAY1 qa_wall plan: %s, ghost errors %s" % [JSON.stringify(planned), JSON.stringify(ghost_state().get("errors", []))])
+	if destination.x < 0:
+		return "no legal wall span with rendered segments was found"
+	known = own_objects().map(func(o): return o.id)
+	before = hud.get_message_log().size()
+	await click(destination)
+	await game._step(8)
+	if not messages_since(before).any(func(m): return str(m).begins_with("MSG_WALL_HUB_CONSTRUCT_SPAN")):
+		return "the legal span click sent no wall construction message: " + JSON.stringify(messages_since(before))
+	var made: Array = []
+	until = Time.get_ticks_msec() + 60000
+	while Time.get_ticks_msec() < until:
+		made = own_objects().filter(func(o): return not known.has(o.id) and o.structure)
+		if made.size() == planned.size() and made.all(func(o): return not world.get_object(o.id).get("under_construction", true)):
+			break
+		await game._wait_seconds(0.25)
+	print("PLAY1 qa_wall result: messages %s, made %s" % [JSON.stringify(messages_since(before)), JSON.stringify(made)])
+	if made.size() != planned.size():
+		return "the span created %d structures for %d planned tiles" % [made.size(), planned.size()]
+	for tile in planned:
+		# A two-world-unit bound allows the pointer's integer-pixel reprojection at release.
+		var matches: Array = made.filter(func(o): return o.template == tile.template and Vector2(o.x, o.y).distance_to(Vector2(tile.x, tile.y)) < 2.0)
+		if matches.size() != 1 or world.get_object(matches[0].id).get("under_construction", true):
+			return "a planned tile did not finish at the preview position: " + JSON.stringify(tile)
+	return ""
+
+
+func _scenario_qa_economy() -> String:
+	var qa: Node = load("res://scripts/qa_player.gd").new()
+	game.add_child(qa)
+	qa.setup(game, world, hud, game._local_name, {})
+	for o in own_objects():
+		if o.commandcenter:
+			qa._base = Vector2(o.x, o.y)
+	var speed: float = world.get_time_scale()
+	world.set_time_scale(4.0)
+	var result := await _qa_economy_run(qa)
+	print("PLAY1 qa_economy: alternate %s, counts %s, issues %s" % [game._alternate_mouse_setup(), JSON.stringify(qa._counts), JSON.stringify(qa._issues)])
+	if not qa._issues.is_empty():
+		result += "; QA issues: " + JSON.stringify(qa._issues)
+	qa.queue_free()
+	world.set_time_scale(speed)
+	return result
+
+
+func _qa_economy_run(qa: Node) -> String:
+	var barracks: Dictionary = {}
+	for template: String in ["GondorFarm", "GondorBarracks"]:
+		await qa._deselect()
+		var worker := await select_own(func(o): return not o.structure and is_worker(str(o.template)))
+		if worker.is_empty():
+			return "no builder could be selected for " + template
+		var build := command_button(func(b): return b.command == "DOZER_CONSTRUCT" and b.template == template and int(b.state) == 1)
+		if build.is_empty():
+			return "no available construction button for " + template
+		qa._note_button(build, str(hud.get_state().get("control_bar", {}).get("command_set", "")))
+		var known: Array = own_objects().map(func(o): return o.id)
+		await qa._place(build, worker)
+		if not qa._issues.is_empty():
+			return "QA placement failed for " + template
+		var building: Dictionary = {}
+		var until := Time.get_ticks_msec() + 60000
+		while Time.get_ticks_msec() < until:
+			for o in own_objects():
+				if not known.has(o.id) and o.template == template:
+					building = o
+			if not building.is_empty() and not world.get_object(building.id).get("under_construction", true):
+				break
+			await game._wait_seconds(0.25)
+		print("PLAY1 qa_economy built: ", JSON.stringify(building))
+		if building.is_empty() or world.get_object(building.id).get("under_construction", true):
+			return "the QA-placed structure did not finish: " + template
+		barracks = building
+	# Make a real refusal, then keep its message while leaving placement. The old
+	# QA report included this historical message alongside a missed unit-button click.
+	await qa._deselect()
+	var worker := await select_own(func(o): return not o.structure and is_worker(str(o.template)))
+	if worker.is_empty():
+		return "no builder for the refused-placement fixture"
+	var farm := command_button(func(b): return b.command == "DOZER_CONSTRUCT" and b.template == "GondorFarm" and int(b.state) == 1)
+	if farm.is_empty() or not await qa._press(farm):
+		return "the refused-placement fixture could not start a farm"
+	await look_by_radar(Vector2(barracks.x, barracks.y))
+	var pixel := to_pixel(barracks.x, barracks.y)
+	await move_to(pixel)
+	await game._step(4)
+	if int(hud.get_placement().get("legal", -1)) != 3:
+		return "placing on the barracks did not report objects in the way: " + JSON.stringify(hud.get_placement())
+	var ui_before: Array = hud.get_state().get("messages", []).duplicate()
+	var before: int = hud.get_message_log().size()
+	await click(pixel)
+	await game._step(4)
+	var ui_refused: Array = hud.get_state().get("messages", []).duplicate()
+	if ui_refused.size() != ui_before.size() + 1 or ui_refused[-1] != "GUI:CantBuildObjectsInTheWay" or not messages_since(before).is_empty():
+		return "the occupied-site fixture did not produce exactly one refusal without construction"
+	await qa._deselect()
+	await look_by_radar(Vector2(barracks.x, barracks.y))
+	if not await select_object(barracks):
+		return "the completed barracks could not be selected"
+	var unit := command_button(func(b): return b.command == "UNIT_BUILD" and not b.in_palantir and int(b.state) == 1)
+	if unit.is_empty():
+		return "the barracks has no available radial unit command: " + button_list()
+	qa._note_button(unit, str(hud.get_state().get("control_bar", {}).get("command_set", "")))
+	var known: Array = own_objects().map(func(o): return o.id)
+	before = hud.get_message_log().size()
+	await qa._press_and_judge(unit, barracks)
+	var sent := messages_since(before)
+	var ui_after: Array = hud.get_state().get("messages", []).duplicate()
+	print("PLAY1 qa_economy production: button %s, ui_refused %s, ui_after %s, sent %s" % [unit.name, JSON.stringify(ui_refused), JSON.stringify(ui_after), JSON.stringify(sent)])
+	if not sent.any(func(m): return str(m).begins_with("MSG_QUEUE_UNIT_CREATE")):
+		return "the actual radial unit press sent no queue message"
+	if ui_after != ui_refused:
+		return "the successful queue changed the historical placement-refusal messages"
+	var until := Time.get_ticks_msec() + 60000
+	while Time.get_ticks_msec() < until:
+		for o in own_objects():
+			if not known.has(o.id) and o.template == unit.template:
+				print("PLAY1 qa_economy produced: ", JSON.stringify(o))
+				return ""
+		await game._wait_seconds(0.25)
+	return "the queued barracks unit did not appear"
+
+
+func _scenario_qa_buttons() -> String:
+	var worker := await select_own(func(o): return not o.structure and is_worker(str(o.template)))
+	if worker.is_empty():
+		return "no builder could be selected"
+	var build := command_button(func(b): return b.command == "DOZER_CONSTRUCT" and int(b.state) == 1)
+	if build.is_empty():
+		return "the builder has no available construction button"
+	var qa: Node = load("res://scripts/qa_player.gd").new()
+	game.add_child(qa)
+	qa.setup(game, world, hud, game._local_name, {})
+	var errors: Array = []
+	if not await qa._press(build) or not hud.get_placement().get("placing", false):
+		errors.append("the builder's presented button did not start placement")
+	await qa._deselect()
+	var fort := await select_own(func(o): return o.structure and str(o.template).ends_with("FortressCitadel"))
+	if fort.is_empty():
+		errors.append("no fortress citadel could be selected")
+	else:
+		var unit := command_button(func(b): return b.command == "UNIT_BUILD" and not b.in_palantir and int(b.state) == 1)
+		if unit.is_empty():
+			errors.append("the fortress has no available radial unit command")
+		else:
+			var known: Array = own_objects().map(func(o): return o.id)
+			var before: int = hud.get_message_log().size()
+			var presses: int = hud.get_hud6_state().get("radial", {}).get("presses", 0)
+			if not await qa._press(unit):
+				errors.append("the QA player could not click the radial unit button")
+			elif int(hud.get_hud6_state().get("radial", {}).get("presses", 0)) != presses + 1:
+				errors.append("the native radial input did not take exactly one press")
+			elif not messages_since(before).any(func(m): return str(m).begins_with("MSG_QUEUE_UNIT_CREATE")):
+				errors.append("the unit press sent no queue message: %s" % str(hud.get_state().get("messages", [])))
+			else:
+				var produced := false
+				var until := Time.get_ticks_msec() + 60000
+				while Time.get_ticks_msec() < until:
+					for o in own_objects():
+						if not known.has(o.id) and o.template == unit.template:
+							produced = true
+					if produced:
+						break
+					await game._wait_seconds(0.25)
+				if not produced:
+					errors.append("the queued unit never appeared")
+	if qa._counts.get("presses_apt", 0) != 1 or qa._counts.get("presses_radial", 0) != 1:
+		errors.append("expected one Apt and one radial press: %s" % JSON.stringify(qa._counts))
+	if not qa._issues.is_empty():
+		errors.append("QA input issues: %s" % JSON.stringify(qa._issues))
+	print("PLAY1 qa_buttons: counts %s, issues %s" % [JSON.stringify(qa._counts), JSON.stringify(qa._issues)])
+	qa.queue_free()
+	return "; ".join(errors)
+
+
+func _scenario_qa_deselect() -> String:
+	var worker := await select_own(func(o): return not o.structure and is_worker(str(o.template)))
+	if worker.is_empty():
+		return "no builder could be selected"
+	var build := command_button(func(b): return b.command == "DOZER_CONSTRUCT" and int(b.state) == 1)
+	if build.is_empty():
+		return "the selected builder has no available construction button"
+	await click(palantir_button(build.frame))
+	await game._step(6)
+	if not hud.get_placement().get("placing", false):
+		return "the construction button did not enter placement"
+	var qa: Node = load("res://scripts/qa_player.gd").new()
+	game.add_child(qa)
+	qa.setup(game, world, hud, game._local_name, {})
+	await qa._deselect()
+	var errors: Array = []
+	if hud.get_placement().get("placing", false):
+		errors.append("placement was not cancelled")
+	if not hud.get_selection().is_empty():
+		errors.append("the selection remained after cancelling placement and deselecting")
+	if qa._counts.get("deselect_mode_cancels", 0) != 1:
+		errors.append("the cleanup did not perform one separate mode cancellation")
+	if not await select_object(worker):
+		errors.append("the builder could not be reselected")
+	else:
+		await qa._deselect()
+		if not hud.get_selection().is_empty():
+			errors.append("the plain deselection left the builder selected")
+	if not qa._issues.is_empty():
+		errors.append("the cleanup reported issues: %s" % JSON.stringify(qa._issues))
+	print("PLAY1 qa_deselect: alternate %s, counts %s, issues %s" % [str(game._alternate_mouse_setup()), JSON.stringify(qa._counts), JSON.stringify(qa._issues)])
+	qa.queue_free()
+	return "; ".join(errors)
 
 func _vp() -> Viewport:
 	return game.get_viewport()
@@ -213,7 +684,8 @@ func _scenario_orders() -> String:
 	for o in world.get_player_objects(game._local_name):
 		if o.id == unit.id:
 			print("PLAY1 orders: the unit is at (%.0f, %.0f) = pixel %s; the target pixel %s is the ground point %s" % [o.x, o.y, to_pixel(o.x, o.y), target, hud.pixel_to_world(target)])
-	await click(target, MOUSE_BUTTON_RIGHT)
+	var order_button := MOUSE_BUTTON_RIGHT if game._alternate_mouse_setup() else MOUSE_BUTTON_LEFT
+	await click(target, order_button)
 	await game._step(4)
 	var moved := log_count("MSG_DO_MOVETO") - before
 	var hints: Dictionary = hud.get_move_hints()
@@ -224,7 +696,7 @@ func _scenario_orders() -> String:
 	var ml: PackedStringArray = hud.get_message_log()
 	print("PLAY1 orders: the last messages: ", ml.slice(maxi(0, ml.size() - 6)))
 	if moved != 1:
-		return "the right click on the ground gave %d MSG_DO_MOVETO" % moved
+		return "order button %d gave %d MSG_DO_MOVETO" % [order_button, moved]
 	if hints.hints.is_empty() or drawn == 0:
 		return "no move hint was drawn"
 	var goal: Vector2 = hud.pixel_to_world(target)
@@ -330,10 +802,32 @@ func _scenario_build5() -> String:
 			break
 	if builder.is_empty():
 		return "no own unit offers a DOZER_CONSTRUCT button"
+	# A worker can temporarily become unselectable during construction. Wait for
+	# selectability and use the player's control-group keys to restore its exact ID
+	# after cancel; a failed restoration stops before any construction button click.
+	var group_key := func(save: bool) -> void:
+		for down in [true, false]:
+			var event := _key_event(KEY_1, down, false)
+			event.ctrl_pressed = save and down
+			Input.parse_input_event(event)
+			await game._step(3)
+		print("BUILD5 group key: save %s, keyboard %s" % [save, JSON.stringify(hud.get_state().get("keys", {}))])
+	await group_key.call(true)
 	var start_placing := func() -> bool:
 		if not hud.get_selection().has(builder.id):
-			await look_by_radar(Vector2(world.get_object(builder.id).x, world.get_object(builder.id).y))
-			await select_object(builder)
+			var worker_state: Dictionary = world.get_object(builder.id)
+			print("BUILD5 worker before restore: ", JSON.stringify(worker_state))
+			var until := Time.get_ticks_msec() + 60000
+			while worker_state.get("ok", false) and not worker_state.selectable and Time.get_ticks_msec() < until:
+				await game._wait_seconds(0.25)
+				worker_state = world.get_object(builder.id)
+			if not worker_state.get("ok", false) or not worker_state.selectable:
+				return false
+			await group_key.call(false)
+			await game._step(4)
+			print("BUILD5 restore worker group: expected %d, selected %s" % [builder.id, JSON.stringify(hud.get_selection())])
+			if hud.get_selection() != [builder.id]:
+				return false
 		await look_by_radar(base + Vector2(250, -150))
 		var bp := palantir_button(button.frame)
 		if bp.x < 0:
@@ -2232,18 +2726,28 @@ func _scenario_farm() -> String:
 	press(palantir_button(farm.frame), MOUSE_BUTTON_LEFT, false)
 	while not hud.get_placement().get("placing", false) and Time.get_ticks_msec() - button_start < 5000:
 		await game.get_tree().process_frame
-	var ghost_ms := Time.get_ticks_msec() - button_start
+	var placement_mode_ms := Time.get_ticks_msec() - button_start
 	if not hud.get_placement().get("placing", false):
 		return "the farm button did not start placement"
 	var site := Vector2(-1, -1)
+	var preview_start := -1
+	var preview_frame_ms := -1
 	for ring in range(2, 9):
 		for n in 12:
 			var p := Vector2(worker.x, worker.y) + Vector2.from_angle(TAU * n / 12.0) * 70.0 * ring
 			var pixel := to_pixel(p.x, p.y)
 			if not on_screen(pixel):
 				continue
+			if preview_start < 0:
+				preview_start = Time.get_ticks_msec()
 			await move_to(pixel)
 			await game._step(2)
+			# Placing is only an input mode. The ghost's meshes and Metal pipelines
+			# can still block the first draw after the pointer leaves the button.
+			if preview_frame_ms < 0 and DisplayServer.get_name() != "headless":
+				await RenderingServer.frame_post_draw
+				if ghost_template() == farm.template:
+					preview_frame_ms = Time.get_ticks_msec() - preview_start
 			if int(hud.get_placement().get("legal", -1)) == 0:
 				site = pixel
 				break
@@ -2251,6 +2755,8 @@ func _scenario_farm() -> String:
 			break
 	if site.x < 0:
 		return "no legal farm site on screen"
+	if DisplayServer.get_name() != "headless" and preview_frame_ms < 0:
+		return "placement started but no frame with the farm ghost was drawn"
 	var before: Array = own_objects().map(func(o): return o.id)
 	var placed := Time.get_ticks_msec()
 	press(site, MOUSE_BUTTON_LEFT, true)
@@ -2264,7 +2770,10 @@ func _scenario_farm() -> String:
 				if o.template == farm.template and not before.has(o.id):
 					building = o
 	var site_ms := Time.get_ticks_msec() - placed
-	print("PLAY1 farm latency: camera %d ms, build button %d ms, site %d ms" % [camera_ms, ghost_ms, site_ms])
+	print("PLAY1 farm latency: camera %d ms, build button %d ms, site %d ms" % [camera_ms, placement_mode_ms, site_ms])
+	# frame_post_draw completes CPU rendering submission, not display presentation
+	# or a GPU timestamp. -1 explicitly means that headless rendering was unavailable.
+	print("PLAY1 farm preview: placement_mode_ms=%d first_preview_frame_ms=%d rendered=%s" % [placement_mode_ms, preview_frame_ms, DisplayServer.get_name() != "headless"])
 	if building.is_empty():
 		return "the farm site did not appear"
 	for attempt in 120:

@@ -45,6 +45,21 @@ func _check(ok: bool, what: String) -> void:
 
 
 func _run() -> int:
+	# A different hit is not necessarily closer: HUD-5's retail pick priorities
+	# can prefer a farther hero. Missing distances must remain unclassified.
+	var qa_script = load("res://scripts/qa_player.gd")
+	for case in [
+		[{"target": "hit", "picked": 2, "target_representative": 1, "picked_t_available": true, "picked_t": 5.0, "target_t": 10.0}, "hit_other_nearer"],
+		[{"target": "hit", "picked": 2, "target_representative": 1, "picked_t_available": true, "picked_t": 20.0, "target_t": 10.0}, "hit_other_farther"],
+		[{"target": "hit", "picked": 2, "target_representative": 1, "picked_t_available": true, "picked_t": 10.0, "target_t": 10.0}, "hit_other_same_depth"],
+		[{"target": "hit", "picked": 2, "target_representative": 1, "picked_t_available": false}, "hit_other_unclassified"],
+		[{"target": "hit", "picked": 2, "target_representative": 1, "picked_t_available": true}, "hit_other_unclassified"],
+		[{"target": "hit", "picked": 1, "target_representative": 1}, "hit"],
+		[{"target": "hit", "picked": 0}, "hit"],
+		[{"target": "miss", "picked": 2}, "miss"],
+		[{}, "unknown"],
+	]:
+		_check(qa_script.selection_probe_verdict(case[0]) == case[1], "selection probe verdict " + case[1])
 	if not ClassDB.class_exists("RetailFileSystem"):
 		print("FAIL: the openbfme extension is not loaded (build engine/, then godot --headless --import)")
 		return EXIT_FAIL

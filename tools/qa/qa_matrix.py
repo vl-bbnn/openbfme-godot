@@ -51,7 +51,7 @@ SEVERITY = {
     "crash": 10, "flow_incomplete": 8, "stall": 8, "game_fail": 8, "timeout": 8,
     "unit_never_produced": 5, "structure_not_started": 5, "no_legal_site": 4, "build_button_no_placement": 5, "placement_no_message": 5,
     "attack_no_message": 6, "select_all_empty": 5, "select_failed": 3, "select_occluded": 0, "select_missed": 2, "button_no_effect": 4, "button_unported": 4, "target_click_no_message": 3,
-    "spell_no_message": 3, "button_window_missing": 3, "no_command_set": 3, "no_command_center": 6, "placement_no_ghost": 2,
+    "spell_no_message": 3, "button_window_missing": 3, "button_not_hittable": 3, "no_command_set": 3, "no_command_center": 6, "placement_no_ghost": 2,
     "live_error": 3, "hud_error": 2, "shell_error": 2, "load_error": 3, "godot_error": 3, "script_error": 6, "godot_warning": 1,
     "stop_hit": 1, "unported_module": 1, "never_won": 2, "construction_stalled": 5, "site_vanished": 4, "resume_not_sent": 5, "attack_move_not_sent": 4,
     "ability_no_effect": 3, "audio_error": 3, "audio_unknown_events": 2, "audio_unknown_event_name": 1, "audio_play_failures": 3, "audio_missing_hook": 2, "audio_calls_without_audio": 2,

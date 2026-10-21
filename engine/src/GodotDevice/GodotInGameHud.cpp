@@ -3671,8 +3671,10 @@ Vector2 InGameHudNode::world_to_pixel(const Vector2 &w) const
 }
 
 // lane IDLE-1: what the pointer meets at a pixel, for the QA harness's verdict on a failed click (qa_player.gd _select). The HUD's own pick
-// (HudObjects::pickObject, the nearest drawn model on the ray) and the same ray against object `id` alone: a click whose ray meets the object's model while the
-// pick answers another object met that one nearer (the object is drawn behind it); a ray that misses the object's model aimed beside it.
+// and the same ray against object `id` alone. A different picked object need not
+// be nearer: RW 0x48AB28's collision-type priorities can prefer a farther hit.
+// Keep the raw drawable and its distance before horde/container promotion so QA
+// can distinguish those cases instead of assuming every other pick is occlusion.
 // Client state only: nothing reaches the simulation.
 Dictionary InGameHudNode::pick_probe(const Vector2 &pixel, int64_t id) const
 {
@@ -3691,13 +3693,19 @@ Dictionary InGameHudNode::pick_probe(const Vector2 &pixel, int64_t id) const
 		return r;
 	}
 	r["ok"] = true;
-	const ::Object *picked = HudObjects::pickForSelection(ctx, px); // lane HUD-5: what a selection click takes (RW 0x485CB8)
+	const unsigned pickTypes = HudObjects::pickTypesForContext(ctx) | HudObjects::PICK_TYPE_OWN;
+	::Object *raw = HudObjects::pickObject(ctx, px, pickTypes, false);
+	const ::Object *picked = raw ? HudObjects::selectionRepresentative(*raw) : nullptr;
 	r["picked"] = picked ? (int64_t)picked->getID() : (int64_t)0;
-	const ::Object *target = d->world->hud_game()->logic().findObjectByID((::ObjectID)id);
+	r["picked_raw"] = raw ? (int64_t)raw->getID() : (int64_t)0;
+	r["picked_t_available"] = false;
+	::Object *target = d->world->hud_game()->logic().findObjectByID((::ObjectID)id);
 	String verdict = "gone";
 	float t = 0.0f;
 	if (target)
 	{
+		const ::Object *representative = HudObjects::selectionRepresentative(*target);
+		r["target_representative"] = representative ? (int64_t)representative->getID() : (int64_t)id;
 		const DrawablePick::Result res = ctx.pickRay ? ctx.pickRay(*target, origin, dir, &t) : DrawablePick::Result::Unknown;
 		verdict = res == DrawablePick::Result::Hit ? "hit" : res == DrawablePick::Result::Miss ? "miss" : res == DrawablePick::Result::NotDrawn ? "not_drawn" : "unknown";
 		r["selectable"] = HudObjects::isSelectable(*target);
@@ -3706,8 +3714,13 @@ Dictionary InGameHudNode::pick_probe(const Vector2 &pixel, int64_t id) const
 	r["target_t"] = t;
 	// lane HUD-5: every hit of the pick's cast, near to far: "<id> <template> t=<t> type=0x<collision type>"
 	Array hits;
-	for (const HudObjects::PickHit &h : HudObjects::pickHits(ctx, px, HudObjects::pickTypesForContext(ctx)))
+	for (const HudObjects::PickHit &h : HudObjects::pickHits(ctx, px, pickTypes))
 	{
+		if (h.obj == raw)
+		{
+			r["picked_t_available"] = true;
+			r["picked_t"] = h.t;
+		}
 		char b[64];
 		std::snprintf(b, sizeof(b), " t=%.1f type=0x%X", h.t, h.type);
 		hits.push_back(String::num_int64((int64_t)h.obj->getID()) + " " + String(h.obj->getTemplate()->getName().c_str()) + String(b));
@@ -3890,9 +3903,17 @@ Dictionary InGameHudNode::find_button_window(const String &path) const
 		return r;
 	}
 	const Vector2 w = d->player->stage_to_window(Vector2((float)(double)b.get("x", 0.0), (float)(double)b.get("y", 0.0)));
-	r["found"] = true;
+	// Keep the Apt hit/visibility diagnostics: a found clip can be off-screen or covered.
+	// Coordinates remain window pixels, as before; the original position is stage space.
+	r = b.duplicate();
+	r["stage_position"] = Vector2((float)(double)b.get("x", 0.0), (float)(double)b.get("y", 0.0));
 	r["x"] = (double)w.x;
 	r["y"] = (double)w.y;
+	Viewport *vp = get_viewport();
+	const bool inViewport = vp && vp->get_visible_rect().has_point(w);
+	r["in_viewport"] = inViewport;
+	r["clickable"] = inViewport && (bool)b.get("enabled", false) && (bool)b.get("self_hit", false) &&
+		String(b.get("hidden_by", "")).is_empty() && String(b.get("hit", "")) == String(b.get("path", ""));
 	return r;
 }
 

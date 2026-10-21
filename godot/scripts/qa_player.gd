@@ -54,6 +54,7 @@ var _next_shot_frame := 0
 var _known_ids := {}
 var _attack_waves := 0
 var _spells_cast := 0
+var _last_spell_target := {} # read-only snapshot immediately before the actual ground press
 var _cash := 0             # --qa-cash: a test hook's one grant at the start (outside the input paths; logged)
 var _victory := false
 var _defeat := false
@@ -274,10 +275,17 @@ func _look(p: Vector2) -> void:
 	if _gone(): return
 
 
-func _click_pixel(px: Vector2, button := 1) -> void:
+func _click_pixel(px: Vector2, button := 1, spell_world: Variant = null) -> void:
 	_hud.inject_mouse_move(px)
 	await _frames(2)
 	if _gone(): return
+	if spell_world is Vector2:
+		var sb: Dictionary = _hud.get_spellbook_state()
+		var input: Dictionary = _hud.get_state()
+		_last_spell_target = {"pixel": {"x": px.x, "y": px.y}, "requested_world": {"x": spell_world.x, "y": spell_world.y}, "requested_shroud": _world.get_shroud_status_at(spell_world.x, spell_world.y),
+			"logic_frame": _world.get_frame(), "over_gui": input.get("over_gui"), "input_enabled": input.get("keys", {}).get("input_enabled"),
+			"selection": _hud.get_selection(), "targeting": sb.get("targeting"), "target_power": sb.get("target_power"),
+			"slots": sb.get("slots", []).duplicate(), "radius_cursor": sb.get("radius_cursor", {}).duplicate(true)}
 	# a quick click (Mouse.ini DragToleranceMS 150: a slow window must not turn it into a drag)
 	_hud.inject_mouse_button(button, true, px, false)
 	await get_tree().process_frame
@@ -287,8 +295,8 @@ func _click_pixel(px: Vector2, button := 1) -> void:
 	if _gone(): return
 
 
-func _click_world(p: Vector2, button := 1) -> void:
-	await _click_pixel(_hud.world_to_pixel(p), button)
+func _click_world(p: Vector2, button := 1, probe_spell := false) -> void:
+	await _click_pixel(_hud.world_to_pixel(p), button, p if probe_spell else null)
 	if _gone(): return
 
 
@@ -301,14 +309,30 @@ func _key(dik: int) -> void:
 	if _gone(): return
 
 
+static func selection_probe_verdict(probe: Dictionary) -> String:
+	var target: String = probe.get("target", "unknown")
+	if target != "hit":
+		return target
+	var picked: int = int(probe.get("picked", 0))
+	if picked == 0 or picked == int(probe.get("target_representative", 0)):
+		return "hit"
+	if not probe.get("picked_t_available", false) or not probe.has("target_t") or not probe.has("picked_t"):
+		return "hit_other_unclassified"
+	if float(probe.picked_t) < float(probe.target_t):
+		return "hit_other_nearer"
+	if float(probe.picked_t) > float(probe.target_t):
+		return "hit_other_farther"
+	return "hit_other_same_depth"
+
+
 ## the player's click on an object: a right click on open ground first drops the selection (BFME's default mouse: with a builder selected a click on our
 ## building would be a context order), then the camera goes there and a left click lands where the object is drawn now; true when the HUD selected it
 ## (or, for a horde member or a castle's shell, the object the HUD selects for it: a selected object of ours close to the click).
 ## Lane IDLE-1: an object no player can select (not SELECTABLE: a projectile, an AI tactical marker, a ping, a NoSelect worker; HudObjects::isSelectable) is
 ## not clicked at all, and a failed click is judged with the HUD's pick (InGameHudNode.pick_probe): where the ray meets the object's drawn model but the pick
-## answers a nearer object, the object stands behind it (a worker behind the citadel, a horde behind a mallorn tree: the overnight matrix's select_failed);
+## answers a nearer object, the ray meets nearer geometry (visual alpha/visibility is not established by this probe);
 ## the player then clicks a part of it that shows (a pixel search around it). Only a click whose ray met the object's model with nothing nearer and still
-## did not select it is a select_failed; an object drawn wholly behind others is select_occluded, one whose model no tried pixel met select_missed.
+## did not select it is a select_failed; an object drawn wholly behind others is select_occluded, one whose model no tried pixel met select_missed. Pick priority / unknown distance are reported separately.
 func _select(o: Dictionary) -> bool:
 	if not _hud.get_selection().is_empty():
 		await _deselect()
@@ -341,19 +365,19 @@ func _select(o: Dictionary) -> bool:
 		at += offset
 		var px: Vector2 = _hud.world_to_pixel(at)
 		tried.append([px, target_id])
-		var _awaited1: bool = await _click_selects(o, px)
+		var click_probe := {}
+		var _awaited1: bool = await _click_selects(o, px, click_probe, target_id)
 		if _gone(): return false
 		if _awaited1:
 			if not first.is_empty():
 				issue("select_needed_retry", o.template, first)
 			return true
-		var probe: Dictionary = _hud.pick_probe(px, target_id)
-		var verdict: String = probe.get("target", "?")
+		var probe: Dictionary = click_probe.get("pick", {})
+		var verdict := selection_probe_verdict(probe)
 		if verdict == "gone":
 			count("select_target_gone") # it died or was removed during the clicks
 			return false
-		if verdict == "hit" and int(probe.get("picked", 0)) != 0:
-			verdict = "hit_other"
+		if verdict.begins_with("hit_other"):
 			cover = str(_world.get_object(int(probe.picked)).get("template", "?"))
 		verdicts[verdict] = int(verdicts.get(verdict, 0)) + 1
 		if first.is_empty():
@@ -362,6 +386,7 @@ func _select(o: Dictionary) -> bool:
 				var so2: Dictionary = _world.get_object(s)
 				got.append("%s at (%.0f, %.0f)" % [so2.get("template", "?"), so2.get("x", 0.0), so2.get("y", 0.0)])
 			first = "a left click on the middle of %s at (%.0f, %.0f) (pixel %s) selected %s" % [o.template, at.x, at.y, str(px), str(got)]
+			first += "; click probe " + JSON.stringify(click_probe)
 		if not _hud.get_selection().is_empty():
 			await _deselect()
 			if _gone(): return false
@@ -380,20 +405,27 @@ func _select(o: Dictionary) -> bool:
 		if best.x > -1e8:
 			break
 	if best.x > -1e8:
-		var _awaited2: bool = await _click_selects(o, best)
+		var best_probe := {}
+		var _awaited2: bool = await _click_selects(o, best, best_probe, target0)
 		if _gone(): return false
 		if _awaited2:
 			issue("select_needed_retry", o.template, first + "; it showed at pixel %s (%s)" % [str(best), JSON.stringify(verdicts)])
 			return true
-		first += "; the pick answers it at pixel %s but the click there did not select it" % str(best)
+		first += "; the search pick answered it at pixel %s but the click there did not select it; click probe %s" % [str(best), JSON.stringify(best_probe)]
 		if not _hud.get_selection().is_empty():
 			await _deselect()
 			if _gone(): return false
-	elif verdicts.has("hit_other") and not verdicts.has("hit"):
+	elif verdicts.has("hit_other_nearer") and not verdicts.has("hit") and not verdicts.has("hit_other_farther") and not verdicts.has("hit_other_same_depth") and not verdicts.has("hit_other_unclassified"):
 		count("select_occluded")
-		issue("select_occluded", o.template, first + "; drawn behind %s at every tried pixel (%s)" % [cover, JSON.stringify(verdicts)])
+		issue("select_occluded", o.template, first + "; nearer picked geometry %s at tested model hits (%s); visual alpha/visibility not established by ray distances" % [cover, JSON.stringify(verdicts)])
 		return false
-	elif not verdicts.has("hit") and not verdicts.has("hit_other"):
+	elif verdicts.has("hit_other_farther") or verdicts.has("hit_other_same_depth") or verdicts.has("hit_other_unclassified"):
+		issue("select_other_pick", o.template, first + "; another hit was chosen; cannot infer nearer occlusion (%s)" % JSON.stringify(verdicts))
+		return false
+	elif verdicts.has("unknown"):
+		issue("select_probe_unclassified", o.template, first + "; ray evidence unavailable (%s)" % JSON.stringify(verdicts))
+		return false
+	elif not verdicts.has("hit") and not verdicts.has("hit_other_nearer"):
 		count("select_missed")
 		issue("select_missed", o.template, first + "; no tried pixel met its drawn model (%s)" % JSON.stringify(verdicts))
 		return false
@@ -402,10 +434,16 @@ func _select(o: Dictionary) -> bool:
 
 
 ## one left click at `px`: true when the HUD then selects `o` (or the object it stands for: see _picks_it)
-func _click_selects(o: Dictionary, px: Vector2) -> bool:
+func _click_selects(o: Dictionary, px: Vector2, probe: Dictionary = {}, target_id: int = 0) -> bool:
 	_hud.inject_mouse_move(px)
 	await _frames(1)
 	if _gone(): return false
+	if target_id != 0:
+		probe["pick"] = _hud.pick_probe(px, target_id)
+		var state: Dictionary = _hud.get_state()
+		probe["over_gui"] = state.get("over_gui", true)
+		probe["input_enabled"] = state.get("keys", {}).get("input_enabled")
+		probe["logic_frame"] = _world.get_frame()
 	_hud.inject_mouse_button(1, true, px, false)
 	_hud.inject_mouse_button(1, false, px, false)
 	await _frames(4)
@@ -413,6 +451,8 @@ func _click_selects(o: Dictionary, px: Vector2) -> bool:
 	for s in _hud.get_selection():
 		if _picks_it(o, int(s)):
 			return true
+	if target_id != 0:
+		probe["after_pick"] = _hud.pick_probe(px, target_id)
 	return false
 
 
@@ -426,31 +466,108 @@ func _picks_it(o: Dictionary, s: int) -> bool:
 	return so.get("ok", false) and so.owner == _local and Vector2(so.x, so.y).distance_to(Vector2(o.x, o.y)) < 8.0
 
 
-## BFME's default mouse (alternate mouse off): a right click drops the selection
+## A terrain click outside the HUD. The camera centre can be a radial command bubble,
+## and a left click (alternate mouse) must also miss every selectable object.
+func _deselect_point(require_empty: bool) -> Vector2:
+	var size := get_viewport().get_visible_rect().size
+	for fraction in [Vector2(0.5, 0.5), Vector2(0.5, 0.35), Vector2(0.35, 0.35),
+			Vector2(0.65, 0.35), Vector2(0.35, 0.5), Vector2(0.65, 0.5),
+			Vector2(0.2, 0.3), Vector2(0.8, 0.3), Vector2(0.2, 0.55), Vector2(0.8, 0.55)]:
+		var p: Vector2 = size * fraction
+		if _hud.pixel_to_world(p).x < -1e8:
+			continue
+		_hud.inject_mouse_move(p)
+		await _frames(2)
+		if _gone(): return Vector2(-1e9, -1e9)
+		var state: Dictionary = _hud.get_state()
+		if state.get("over_gui", true):
+			continue
+		if require_empty:
+			var pick: Dictionary = _hud.pick_probe(p, 0)
+			if not pick.get("ok", false) or int(pick.get("picked", -1)) != 0:
+				continue
+		return p
+	return Vector2(-1e9, -1e9)
+
+
+## Cancel a pending command first, then make one deselection click in the active mouse setup.
 func _deselect() -> void:
-	var p: Vector2 = _hud.world_to_pixel(_hud.get_camera().get("position", _base))
-	# a right click in the middle of the screen; if the selection holds on, that is a finding
-	await _click_pixel(p, 2)
+	if _hud.get_selection().is_empty() and not _hud.get_state().get("gui_command", false) and not _hud.get_spellbook_state().get("targeting", false) and not _hud.get_placement().get("placing", false):
+		return
+	var alternate: bool = _game._alternate_mouse_setup()
+	var p: Vector2 = await _deselect_point(alternate and not _hud.get_selection().is_empty())
+	if _gone(): return
+	if p.x < -1e8:
+		issue("deselect_no_ground", "terrain", "no tested pixel met the terrain/HUD preconditions for the current mouse setup")
+		return
+	# InGameHud::mouseButton and SelectionXlat: a right click cancels targeting/placement;
+	# cancelling a command is a separate action and can preserve the selection.
+	if _hud.get_state().get("gui_command", false) or _hud.get_spellbook_state().get("targeting", false) or _hud.get_placement().get("placing", false):
+		await _click_pixel(p, 2)
+		if _gone(): return
+		count("deselect_mode_cancels")
+		if _hud.get_state().get("gui_command", false) or _hud.get_spellbook_state().get("targeting", false) or _hud.get_placement().get("placing", false):
+			issue("deselect_cancel_failed", "right click", "a right click on verified terrain did not cancel the pending command")
+			return
+	if _hud.get_selection().is_empty():
+		return
+	var button := 1 if alternate else 2
+	await _click_pixel(p, button)
 	if _gone(): return
 	if not _hud.get_selection().is_empty():
-		issue("deselect_failed", "right click", "a right click on the ground left %d objects selected" % _hud.get_selection().size())
+		issue("deselect_failed", "terrain click", "button %d at verified terrain pixel %s left %d objects selected (over_gui %s)" % [button, str(p), _hud.get_selection().size(), str(_hud.get_state().get("over_gui", false))])
+	else:
+		count("deselections")
 
 
-## a click on the Palantir position that shows the button (AptPalantir::syncFrames: the movie's own button)
+## A command's actual presentation: non-dozers use native radial bubbles, builders
+## use the Apt side bar, and InPalantir buttons can also have an arc presentation.
+func _button_point(b: Dictionary) -> Dictionary:
+	var viewport := get_viewport().get_visible_rect()
+	if not b.in_palantir:
+		for radial in _hud.get_hud6_state().get("radial", {}).get("buttons", []):
+			if int(radial.slot) == int(b.slot) and radial.name == b.name:
+				var rect: Rect2 = radial.rect
+				var p := rect.get_center()
+				if viewport.has_point(p):
+					return {"found": true, "kind": "radial", "pixel": p}
+	var w: Dictionary = _hud.find_button_window(b.frame)
+	if w.get("clickable", false):
+		return {"found": true, "kind": "apt", "pixel": Vector2(w.x, w.y), "path": w.path}
+	return {"found": false, "apt": w}
+
+
+## Wait for the presented button, move over it, then verify the same pixel again
+## before pressing. A hidden side-bar clip is not the radial button over a building.
 func _press(b: Dictionary) -> bool:
-	var w: Dictionary = {}
-	for attempt in 10:
-		w = _hud.find_button_window(b.frame)
-		if w.get("found", false):
-			break
-		await _frames(3) # the movie rebuilds its buttons after a selection change
+	var point: Dictionary = {}
+	for attempt in 20:
+		point = _button_point(b)
+		if not point.get("found", false):
+			await _frames(3) # a selection change can leave the movie's slide-in animation in progress
+			if _gone(): return false
+			continue
+		var pixel: Vector2 = point.pixel
+		_hud.inject_mouse_move(pixel)
+		await _frames(2)
 		if _gone(): return false
-	if not w.get("found", false):
-		issue("button_window_missing", b.name, "the Palantir has no clip %s for the button (command %s) after 30 frames" % [b.frame, b.command])
-		return false
-	await _click_pixel(Vector2(w.x, w.y))
-	if _gone(): return false
-	return true
+		var hit := false
+		if point.kind == "radial":
+			hit = int(_hud.get_hud6_state().get("radial", {}).get("hilited", -1)) == int(b.slot)
+		else:
+			hit = _game._shell.hit_test_stage(_game._shell.window_to_stage(pixel.floor())) == point.path
+		if not hit:
+			continue # a rollover or animation moved the clip; find its current hit point
+		_hud.inject_mouse_button(1, true, pixel, false)
+		await get_tree().process_frame
+		if _gone(): return false
+		_hud.inject_mouse_button(1, false, pixel, false)
+		await _frames(3)
+		if _gone(): return false
+		count("presses_" + str(point.kind))
+		return true
+	issue("button_not_hittable", b.name, "no visible hit point for slot %d / %s after the UI settled: %s" % [b.slot, b.frame, JSON.stringify(point)])
+	return false
 
 
 func _own_objects() -> Array:
@@ -811,8 +928,13 @@ func _production() -> void:
 			_shot("sel-" + o.template)
 		_sets_seen[o.template] = set_name
 		var pressed := 0
+		var seen_buttons := {}
 		for b in buttons:
 			_note_button(b, set_name)
+			var button_key := "%d:%s" % [int(b.slot), str(b.name)]
+			if seen_buttons.has(button_key):
+				continue # the arc and radial/side lists can show the same logical command
+			seen_buttons[button_key] = true
 			if b.command in SKIP_COMMANDS or b.command == "DOZER_CONSTRUCT":
 				continue
 			if int(b.state) != 1:
@@ -836,7 +958,7 @@ func _production() -> void:
 			# the bar as it is now (a press before this one spent money or filled a queue)
 			var now_b: Dictionary = {}
 			for nb in _hud.get_command_buttons():
-				if nb.name == b.name:
+				if nb.name == b.name and int(nb.slot) == int(b.slot) and nb.in_palantir == b.in_palantir:
 					now_b = nb
 			if now_b.is_empty() or int(now_b.state) != 1:
 				continue
@@ -853,6 +975,7 @@ func _production() -> void:
 func _press_and_judge(b: Dictionary, source: Dictionary) -> void:
 	var before_log: int = _hud.get_message_log().size()
 	var before_unported: Dictionary = _hud.get_report().get("unported_presses", {}).duplicate()
+	var before_ui: Array = _hud.get_state().get("messages", []).duplicate()
 	var _awaited9: bool = await _press(b)
 	if _gone(): return
 	if not _awaited9:
@@ -863,6 +986,12 @@ func _press_and_judge(b: Dictionary, source: Dictionary) -> void:
 	if _gone(): return
 	var log: PackedStringArray = _hud.get_message_log()
 	var st: Dictionary = _hud.get_state()
+	var after_ui: Array = st.get("messages", [])
+	var history_retained := after_ui.size() >= before_ui.size() and after_ui.slice(0, before_ui.size()) == before_ui
+	# UI messages are history, not a refusal from this command. Attribute only an
+	# appended suffix to the press; report a replaced history explicitly.
+	var ui_delta := {"appended": after_ui.slice(before_ui.size()) if history_retained else [], "history_replaced": not history_retained,
+		"previous_tail": before_ui.slice(-2), "current_tail": after_ui.slice(-2)}
 	var unported: Dictionary = _hud.get_report().get("unported_presses", {})
 	for k in unported.keys():
 		if unported[k] != before_unported.get(k, 0):
@@ -910,11 +1039,11 @@ func _press_and_judge(b: Dictionary, source: Dictionary) -> void:
 		if _gone(): return
 		return
 	if b.command == "SPECIAL_POWER" or b.command == "SPECIAL_POWER_FROM_COMMAND_CENTER":
-		issue("ability_no_effect", b.name, "a ready %s button of %s (%s) neither sent a message nor asked for a target (ui messages %s)" % [b.command, source.template,
-			b.power, str(st.get("messages", []).slice(-2))])
+		issue("ability_no_effect", b.name, "a ready %s button of %s (%s) neither sent a message nor asked for a target (UI message delta %s)" % [b.command, source.template,
+			b.power, JSON.stringify(ui_delta)])
 	elif b.command in DIRECT_COMMANDS:
-		issue("button_no_effect", b.name, "an enabled %s button of %s (%s) sent no message (selection %s, ui messages %s)" % [b.command, source.template,
-			b.template if not b.template.is_empty() else b.upgrade, str(_hud.get_selection()), str(st.get("messages", []).slice(-2))])
+		issue("button_no_effect", b.name, "an enabled %s button of %s (%s) sent no message (selection %s, UI message delta %s)" % [b.command, source.template,
+			b.template if not b.template.is_empty() else b.upgrade, str(_hud.get_selection()), JSON.stringify(ui_delta)])
 
 
 ## lane QA-2: the structure of another player (an enemy, a neutral or civilian building) nearest to a point
@@ -1014,6 +1143,26 @@ func _abilities() -> void:
 
 # ---- spells: the spell store buys a power, the spell book casts the ready ones ---------------------------------------------------------------------------
 
+func _spell_cast_observed(before: int, slot: int) -> bool:
+	# Selection messages can accompany a rejected spell target. They do not prove
+	# a cast; neither do disabled/unaffordable slot states after a fortress dies.
+	var messages: Array = _hud.get_message_log()
+	if messages.slice(before).any(func(m): return str(m).begins_with("MSG_DO_SPECIAL_POWER")):
+		return true
+	var slots: Array = _hud.get_spellbook_state().get("slots", [])
+	return slot < slots.size() and slots[slot] == "_notReady"
+
+
+func _spell_target_refused(slot: int) -> bool:
+	var probe := _last_spell_target
+	var cursor: Dictionary = probe.get("radius_cursor", {})
+	var after: Dictionary = _hud.get_spellbook_state()
+	var slots: Array = after.get("slots", [])
+	# InGameHud::mouseButton refuses an observed invalid location, preserving
+	# targeting and the ready power. Keep missing/unknown probe fields unclassified.
+	return probe.get("input_enabled") == true and probe.get("over_gui") == false and probe.get("targeting") == true and cursor.get("active") == true and cursor.get("valid") == false and after.get("targeting") == true and not str(probe.get("target_power", "")).is_empty() and after.get("target_power") == probe.get("target_power") and slot < slots.size() and slots[slot] == "_up"
+
+
 func _spells() -> void:
 	var sb: Dictionary = _hud.get_spellbook_state()
 	if not sb.get("ok", false):
@@ -1040,7 +1189,8 @@ func _spells() -> void:
 		if slots[k] != "_up":
 			continue
 		var target := _base.lerp(_enemy_bases[0].pos, 0.5) if not _enemy_bases.is_empty() else _base + Vector2(100, 0)
-		# the army's position is a better target for buffs; the enemy base for damage: the power decides (both are legal clicks)
+		# This candidate point is not assumed legal. Record the actual cursor and
+		# GUI state before the ground press when classifying a missing command.
 		await _look(target)
 		if _gone(): return
 		var before: int = _hud.get_message_log().size()
@@ -1048,27 +1198,33 @@ func _spells() -> void:
 		await _frames(3)
 		if _gone(): return
 		var st: Dictionary = _hud.get_spellbook_state()
+		_last_spell_target = {}
 		if st.get("targeting", false):
-			await _click_world(target)
+			await _click_world(target, 1, true)
 			if _gone(): return
 			await _frames(3)
 			if _gone(): return
 		# the spell bar sends its messages to the command list itself (InGameHud::send, not the HUD's translators): a cast shows as the slot recharging
-		var ok: bool = _hud.get_message_log().size() > before
+		var ok := _spell_cast_observed(before, k)
 		for w in 20:
 			if ok:
 				break
 			await _wait_logic(1)
 			if _gone(): return
-			var after: Array = _hud.get_spellbook_state().get("slots", [])
-			ok = k < after.size() and after[k] != "_up"
+			ok = _spell_cast_observed(before, k)
 		var power: String = st.get("target_power", "slot %d" % k)
 		if ok:
 			_spells_cast += 1
 			count("spells_cast")
 			print("QA spell cast slot %d %s" % [k, power])
+		elif _spell_target_refused(k):
+			count("spell_targets_rejected")
+			print("QA spell target rejected slot %d %s: %s" % [k, power, JSON.stringify(_last_spell_target)])
+			await _key(DIK_ESCAPE)
+			if _gone(): return
 		else:
-			issue("spell_no_message", power, "the ready spell book slot %d (%s) sent no message" % [k, power])
+			issue("spell_no_message", power, "the ready spell book slot %d (%s) sent no message; target probe %s; after %s" % [k, power,
+				JSON.stringify(_last_spell_target), JSON.stringify(_hud.get_spellbook_state())])
 			await _key(DIK_ESCAPE)
 			if _gone(): return
 		break
