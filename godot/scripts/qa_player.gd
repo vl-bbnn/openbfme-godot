@@ -826,7 +826,6 @@ func _economy() -> void:
 
 
 func _place(b: Dictionary, builder: Dictionary) -> void:
-	var before_log: int = _hud.get_message_log().size()
 	var _awaited7: bool = await _press(b)
 	if _gone(): return
 	if not _awaited7:
@@ -870,13 +869,34 @@ func _place(b: Dictionary, builder: Dictionary) -> void:
 		return
 	if not ghost_seen:
 		issue("placement_no_ghost", b.template, "the placement of %s never showed a ghost model over the terrain" % b.template)
+	# The preview verdict may be cached (odd client frames / busy logic). Record it,
+	# but judge the actual click from its own command and newly appended UI response.
+	var before_log: int = _hud.get_message_log().size()
+	var before_ui: Array = _hud.get_state().get("messages", []).duplicate()
+	var preview: Dictionary = pl.duplicate(true)
 	await _click_pixel(_hud.world_to_pixel(site))
 	if _gone(): return
 	await _frames(4)
 	if _gone(): return
 	var log: PackedStringArray = _hud.get_message_log()
-	if log.size() <= before_log:
-		issue("placement_no_message", b.template, "a click on a legal site sent no construct message")
+	var sent := log.slice(before_log)
+	var construct_sent := false
+	for message in sent:
+		construct_sent = construct_sent or message.begins_with("MSG_DOZER_CONSTRUCT") or message.begins_with("MSG_FOUNDATION_CONSTRUCT")
+	if not construct_sent:
+		var ui_delta := _ui_message_delta(before_ui, _hud.get_state().get("messages", []))
+		var refusals: Array = []
+		# These are the existing PlaceEventTranslator feedback labels, not a new
+		# legality decision. An unchanged/replaced history cannot prove a refusal.
+		for message in ui_delta.appended:
+			if str(message).begins_with("GUI:CantBuild") or message in ["GUI:NotEnoughMoneyToBuild", "GUI:ProductionQueueFull", "GUI:ParkingPlacesFull", "GUI:UnitMaxedOut"]:
+				refusals.append(message)
+		var context := {"preview": preview, "after_click": _hud.get_placement(), "site": site,
+			"commands": sent, "ui_delta": ui_delta, "refusals": refusals}
+		if not refusals.is_empty():
+			issue("placement_refused", b.template, "the click received new placement refusal feedback without a construct message: " + JSON.stringify(context))
+		else:
+			issue("placement_no_message", b.template, "the click sent no construct message and no new placement refusal was observed: " + JSON.stringify(context))
 		return
 	_placed[b.template] = _placed.get(b.template, 0) + 1
 	_buttons[b.name].effects += 1
@@ -972,6 +992,14 @@ func _production() -> void:
 			if _gone(): return
 
 
+func _ui_message_delta(before_ui: Array, after_ui: Array) -> Dictionary:
+	var history_retained := after_ui.size() >= before_ui.size() and after_ui.slice(0, before_ui.size()) == before_ui
+	# UI messages are history, not a refusal from this command. Attribute only an
+	# appended suffix to the press; report a replaced history explicitly.
+	return {"appended": after_ui.slice(before_ui.size()) if history_retained else [], "history_replaced": not history_retained,
+		"previous_tail": before_ui.slice(-2), "current_tail": after_ui.slice(-2)}
+
+
 func _press_and_judge(b: Dictionary, source: Dictionary) -> void:
 	var before_log: int = _hud.get_message_log().size()
 	var before_unported: Dictionary = _hud.get_report().get("unported_presses", {}).duplicate()
@@ -987,11 +1015,7 @@ func _press_and_judge(b: Dictionary, source: Dictionary) -> void:
 	var log: PackedStringArray = _hud.get_message_log()
 	var st: Dictionary = _hud.get_state()
 	var after_ui: Array = st.get("messages", [])
-	var history_retained := after_ui.size() >= before_ui.size() and after_ui.slice(0, before_ui.size()) == before_ui
-	# UI messages are history, not a refusal from this command. Attribute only an
-	# appended suffix to the press; report a replaced history explicitly.
-	var ui_delta := {"appended": after_ui.slice(before_ui.size()) if history_retained else [], "history_replaced": not history_retained,
-		"previous_tail": before_ui.slice(-2), "current_tail": after_ui.slice(-2)}
+	var ui_delta := _ui_message_delta(before_ui, after_ui)
 	var unported: Dictionary = _hud.get_report().get("unported_presses", {})
 	for k in unported.keys():
 		if unported[k] != before_unported.get(k, 0):
