@@ -9,6 +9,7 @@
 #include "GameClient/MapObjectDrawables.h"
 #include "GameClient/MapObjectRuntime.h"
 #include "GameClient/MapUtil.h"
+#include "GameClient/UserDataFolder.h"
 #include "GameLogic/Map/TerrainLogic.h"
 #include "GameLogic/Object/RetailObjectWorld.h"
 #include "GodotDevice/GodotRetailFileSystem.h"
@@ -237,9 +238,19 @@ Node3D *MapObjectBuilder::build_objects(const Ref<RetailFileSystem> &fsRef, cons
 
 	RetailFileSystem &rfs = *fsRef.ptr();
 	std::string lowerName = AsciiStringUtil::lowered(toNative(map_name));
-	const std::string path = MapClassification::mapPath(lowerName);
+	// lane MOD-5: a user map is <user maps folder>\<name>\<name>.map (RW 0x70254F), read from disk; any other map is the archives' maps\<name>
+	const bool userMap = optBool(options, "user_map", false);
+	std::string mapsFolder, error;
+	if (!rfs.mapsFolder(userMap, mapsFolder, &error))
+	{
+		return fail(error);
+	}
+	if (userMap)
+	{
+		stops.push_back(UserDataFolder::kUserMapStop);
+	}
+	const std::string path = MapClassification::mapPath(lowerName, mapsFolder);
 	std::vector<uint8_t> bytes;
-	std::string error;
 	if (!rfs.readBytes(path, bytes, &error))
 	{
 		return fail(error);
@@ -249,7 +260,7 @@ Node3D *MapObjectBuilder::build_objects(const Ref<RetailFileSystem> &fsRef, cons
 	m_drawables.reset(new MapObjectDrawables());
 	TerrainLogic terrain;
 	MapClassification::Result cr;
-	if (!MapClassification::run(bytes, path, lowerName, *m_world, *m_options, *m_map, terrain, *m_drawables, nullptr, cr, &error))
+	if (!MapClassification::run(bytes, path, lowerName, *m_world, *m_options, *m_map, terrain, *m_drawables, nullptr, cr, &error, mapsFolder))
 	{
 		return fail(error);
 	}

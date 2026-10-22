@@ -20,9 +20,10 @@
 
 namespace MapClassification
 {
-// "maps\<name>" and "maps\<name>\<name>.map" for the lower-cased map name
-std::string mapDirectory(const std::string &lowerName);
-std::string mapPath(const std::string &lowerName);
+// "<mapsFolder>\<name>" and "<mapsFolder>\<name>\<name>.map" for the lower-cased map name. mapsFolder is the game's "maps" (MapCache::getMapDir,
+// RW 0x701C6D), which the archives hold, or the user maps folder (lane MOD-5: UserDataFolder::userMapFolder, MapCache::getUserMapDir RW 0x70254F)
+std::string mapDirectory(const std::string &lowerName, const std::string &mapsFolder = "maps");
+std::string mapPath(const std::string &lowerName, const std::string &mapsFolder = "maps");
 
 struct Result
 {
@@ -32,9 +33,9 @@ struct Result
 	double secondsLoad = 0.0, secondsMapIni = 0.0, secondsBuild = 0.0;
 };
 
-// `bytes` is the content of mapPath(lowerName); `sourceName` names it in errors. `clientOnly` may be null (the static path draws everything from
-// `classified`). false + *error when the map cannot be parsed; problems inside it are in classified.report.
+// `bytes` is the content of mapPath(lowerName, mapsFolder); `sourceName` names it in errors. `clientOnly` may be null (the static path draws
+// everything from `classified`). false + *error when the map cannot be parsed; problems inside it are in classified.report.
 bool run(const std::vector<std::uint8_t> &bytes, const std::string &sourceName, const std::string &lowerName, RetailObjectWorld &world,
 	const MapObjectOptions &options, LoadedMap &map, TerrainLogic &terrain, MapObjectDrawables &classified, MapObjectDrawables *clientOnly,
-	Result &result, std::string *error);
+	Result &result, std::string *error, const std::string &mapsFolder = "maps");
 } // namespace MapClassification

@@ -13,6 +13,16 @@
 ## are unobserved here; confirm either symptom with a dense trace before diagnosing continuous immobility or a visible run cycle.
 extends Node
 
+const ScenarioPlayer := preload("res://scripts/scenario_player.gd")
+
+class RunGuard extends ScenarioPlayer:
+	func _run(p_game: Node, scenarios: PackedStringArray) -> void:
+		await _run_scenarios(scenarios, [Callable(p_game, "_run_qa_scenario")])
+
+	func _scenario_label() -> String:
+		return "QA-RUN"
+
+
 const DIK_Q := 0x10
 const DIK_ESCAPE := 0x01
 const DIK_A := 0x1E

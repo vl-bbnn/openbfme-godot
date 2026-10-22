@@ -2,6 +2,7 @@
 // See ControlBar.h.
 
 #include "GameClient/ControlBar.h"
+#include "GameLogic/CreateAHeroSystem.h"
 #include "Common/Upgrade.h"
 
 #include "Common/BuildAssistant.h"
@@ -443,7 +444,7 @@ const SpecialPowerTemplate *ControlBar::specialPowerOf(const CommandButton &b)
 }
 
 // lane HERO-1 (S-850): RW 0x7810BC, the button image of a hero record: Gandalf (GondorGandalf) without SCIENCE_GandalftheWhite shows HIGandalTheGrey; a
-// Create-A-Hero (template + 0x11F & 0x40) its own data's image (not ported: the template's); otherwise the template's ButtonImage (RW 0x73CFEF)
+// Create-A-Hero (template + 0x11F & 0x40) its chosen subclass's image (custom screenshots remain unported); otherwise the template's ButtonImage (RW 0x73CFEF)
 std::string ControlBar::heroRecordImage(const HeroRecord &r, const Player &player)
 {
 	if (r.templateName == "GondorGandalf" && TheScienceStore)
@@ -454,7 +455,19 @@ std::string ControlBar::heroRecordImage(const HeroRecord &r, const Player &playe
 			return "HIGandalTheGrey";
 		}
 	}
+	// RW 0x7810BC's custom-hero branch uses the player's chosen record.
+	// Until custom screenshots are supported, use its retail subclass button
+	// image, consistent with CreateAHeroModels.inc rather than the wizard template.
 	const ThingTemplate *tt = m_ctx.logic.things().findTemplate(r.templateName);
+	static const int customHeroKind = ObjectTemplateInfoBuilder::kindOfIndex("CREATE_A_HERO");
+	if (tt && customHeroKind >= 0 && MaskTest(ObjectTemplateInfoBuilder::build(*tt).kindOf, (unsigned)customHeroKind))
+	{
+		const CreateAHeroHero *hero = m_ctx.logic.createAHeroes().heroOf(player);
+		const CreateAHeroSubClass *sub = hero && TheCreateAHeroSystem
+			? TheCreateAHeroSystem->subClass(hero->classIndex, hero->subClassIndex) : nullptr;
+		// RW 0x7810BC -> 0x61B2DF / 0x61B379 -> 0x61AF37.
+		return sub && !sub->buttonImage.empty() ? sub->buttonImage : "BuildingNoArt";
+	}
 	if (tt)
 	{
 		for (const char *field : { "ButtonImage", "SelectPortrait" })

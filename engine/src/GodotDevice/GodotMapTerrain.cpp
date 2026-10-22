@@ -6,12 +6,14 @@
 #include "GodotDevice/GodotMapTerrain.h"
 
 #include "Common/ArchiveFileSystem.h"
+#include "GameClient/MapClassification.h"
 #include "GameClient/MapStops.h"
 #include "GameClient/MapUtil.h"
 #include "GameClient/MapWeather.h"
 #include "GameClient/TerrainAtlas.h"
 #include "GameClient/TerrainRoads.h"
 #include "GameClient/TerrainTypes.h"
+#include "GameClient/UserDataFolder.h"
 #include "GameClient/WaterGeometry.h"
 #include "GameEngineDevice/W3DDevice/GameClient/HeightMapMesh.h"
 #include "GameEngineDevice/W3DDevice/GameClient/W3DObjectLighting.h"
@@ -502,12 +504,23 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 	const bool vertexAll = optStr(options, "vertex_color", "accent") == String("all");
 
 	const std::string name = lowerStr(toNative(map_name));
-	const std::string path = "maps\\" + name + "\\" + name + ".map";
+	// lane MOD-5: a user map is <user maps folder>\<name>\<name>.map (RW 0x70254F), read from disk; any other map is the archives' maps\<name>
+	const bool userMap = optBool(options, "user_map", false);
+	std::string mapsFolder, error;
+	if (!rfs.mapsFolder(userMap, mapsFolder, &error))
+	{
+		return fail(error);
+	}
+	const std::string mapDir = MapClassification::mapDirectory(name, mapsFolder);
+	const std::string path = MapClassification::mapPath(name, mapsFolder);
+	if (userMap)
+	{
+		stops.push_back(UserDataFolder::kUserMapStop);
+	}
 	double t0 = nowMs();
 
 	// ---- 1. load the map ------------------------------------------------------------------------
 	std::vector<uint8_t> bytes;
-	std::string error;
 	if (!rfs.readBytes(path, bytes, &error))
 	{
 		return fail(error);
@@ -596,7 +609,7 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 	terrain.init(hm, map.chunks, &logicProblems);
 
 	Dictionary info;
-	info["archive"] = toGodot(arch->getArchiveFilenameForFile(path));
+	info["archive"] = toGodot(arch->getArchiveFilenameForFile(path)); // "" for a user map
 	info["stored_bytes"] = (int64_t)map.storedSize;
 	info["decoded_bytes"] = (int64_t)map.decodedSize;
 	info["width"] = hm.m_width;
@@ -794,7 +807,7 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 
 		MapWeather weather;
 		std::string werr;
-		if (!MapWeatherScan::load(*arch, name, weather, &werr))
+		if (!MapWeatherScan::load(*arch, mapDir, weather, &werr))
 		{
 			errors.push_back(toGodot("weather: " + werr));
 		}
@@ -1221,7 +1234,7 @@ Node3D *MapTerrainBuilder::build_map(const Ref<RetailFileSystem> &fsRef, const S
 			}
 		}
 		std::set<std::string> unresolved;
-		const std::string mapIni = "maps\\" + name + "\\map.ini";
+		const std::string mapIni = mapDir + "\\map.ini";
 		for (const MapObject &o : map.chunks.objects)
 		{
 			if (o.getFlag(FLAG_ROAD_FLAGS))

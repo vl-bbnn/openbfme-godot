@@ -124,8 +124,12 @@ void Apt::buildRenderListImpl(AptRenderList &out, const std::string *nativeTag)
 	out.errors.clear();
 	out.unverified.clear();
 	std::set<std::string> unverified;
-	std::function<void(AptCharacterInst *, const AptMatrix &, const AptColorTransform &, int)> emit;
-	emit = [&](AptCharacterInst *inst, const AptMatrix &parentM, const AptColorTransform &parentC, int level) {
+	// lane HUDREDRAW-1 (the HUD rebuilds this list every render frame): `path` is the instance's targetPath, built on the way down (childPath)
+	std::function<void(AptCharacterInst *, const AptMatrix &, const AptColorTransform &, int, std::string &&)> emit;
+	auto childPath = [](const AptCharacterInst *parent, const std::string &parentPath, const AptCharacterInst *k) {
+		return k->parent() == parent ? parentPath + "." + k->pathSegment() : k->targetPath();
+	};
+	emit = [&](AptCharacterInst *inst, const AptMatrix &parentM, const AptColorTransform &parentC, int level, std::string &&path) {
 		if (!inst || !inst->defined() || !inst->visible || (nativeTag && !out.commands.empty()))
 		{
 			return;
@@ -135,7 +139,7 @@ void Apt::buildRenderListImpl(AptRenderList &out, const std::string *nativeTag)
 		AptRenderCommand base;
 		if (!nativeTag)
 		{
-			base.path = inst->targetPath();
+			base.path = std::move(path);
 		}
 		base.level = level;
 		base.matrix = M;
@@ -195,7 +199,7 @@ void Apt::buildRenderListImpl(AptRenderList &out, const std::string *nativeTag)
 					cmd.bounds[2] = x1;
 					cmd.bounds[3] = y1;
 				}
-				out.commands.push_back(cmd);
+				out.commands.push_back(std::move(cmd));
 				return;
 			}
 		}
@@ -224,7 +228,7 @@ void Apt::buildRenderListImpl(AptRenderList &out, const std::string *nativeTag)
 						cmd.bounds[2] = x1;
 						cmd.bounds[3] = y1;
 					}
-					out.commands.push_back(cmd);
+					out.commands.push_back(std::move(cmd));
 					return;
 				}
 			}
@@ -338,7 +342,7 @@ void Apt::buildRenderListImpl(AptRenderList &out, const std::string *nativeTag)
 						cmd.fills.push_back(fill);
 					}
 				}
-				out.commands.push_back(cmd);
+				out.commands.push_back(std::move(cmd));
 				break;
 			}
 			case AptCharacterInst::Type::EditText:
@@ -386,21 +390,21 @@ void Apt::buildRenderListImpl(AptRenderList &out, const std::string *nativeTag)
 					std::copy(info->bounds, info->bounds + 4, cmd.bounds);
 					AptCharRef fontRef;
 					std::string error;
-					const std::string label = t->charRef().file->name + " text " + std::to_string(t->charRef().character->id) + " (" + cmd.path + ")";
+					auto label = [&] { return t->charRef().file->name + " text " + std::to_string(t->charRef().character->id) + " (" + cmd.path + ")"; };
 					if (!resolveCharacter(t->charRef().file, info->fontId, fontRef, &error))
 					{
-						out.errors.push_back(label + ": font " + std::to_string(info->fontId) + " does not resolve: " + error);
+						out.errors.push_back(label() + ": font " + std::to_string(info->fontId) + " does not resolve: " + error);
 					}
 					else if (fontRef.character->type != APT_CHAR_FONT)
 					{
-						out.errors.push_back(label + ": font " + std::to_string(info->fontId) + " is a character of type " + std::to_string(fontRef.character->type) + ", not a font");
+						out.errors.push_back(label() + ": font " + std::to_string(info->fontId) + " is a character of type " + std::to_string(fontRef.character->type) + ", not a font");
 					}
 					else
 					{
 						cmd.fontName = fontRef.character->fontName;
 					}
 				}
-				out.commands.push_back(cmd);
+				out.commands.push_back(std::move(cmd));
 				break;
 			}
 			case AptCharacterInst::Type::Sprite:
@@ -413,14 +417,14 @@ void Apt::buildRenderListImpl(AptRenderList &out, const std::string *nativeTag)
 				{
 					if (nativeTag)
 					{
-						emit(k, M, C, level);
+						emit(k, M, C, level, std::string());
 						continue;
 					}
 					if (maskEnd >= 0 && k->depth() > maskEnd)
 					{
 						AptRenderCommand end = base;
 						end.kind = AptRenderCommand::Kind::MaskEnd;
-						out.commands.push_back(end);
+						out.commands.push_back(std::move(end));
 						maskEnd = -1;
 					}
 					if (k->clipDepth >= 0)
@@ -430,28 +434,29 @@ void Apt::buildRenderListImpl(AptRenderList &out, const std::string *nativeTag)
 						{
 							AptRenderCommand end = base;
 							end.kind = AptRenderCommand::Kind::MaskEnd;
-							out.commands.push_back(end);
+							out.commands.push_back(std::move(end));
 						}
+						const std::string kPath = childPath(inst, base.path, k);
 						AptRenderCommand begin = base;
 						begin.kind = AptRenderCommand::Kind::MaskBegin;
-						begin.path = k->targetPath();
+						begin.path = kPath;
 						begin.clipDepth = k->clipDepth;
-						out.commands.push_back(begin);
-						emit(k, M, C, level);
+						out.commands.push_back(std::move(begin));
+						emit(k, M, C, level, std::string(kPath));
 						AptRenderCommand content = base;
 						content.kind = AptRenderCommand::Kind::MaskContentBegin;
-						content.path = k->targetPath();
-						out.commands.push_back(content);
+						content.path = kPath;
+						out.commands.push_back(std::move(content));
 						maskEnd = k->clipDepth;
 						continue;
 					}
-					emit(k, M, C, level);
+					emit(k, M, C, level, nativeTag ? std::string() : childPath(inst, base.path, k));
 				}
 				if (maskEnd >= 0)
 				{
 					AptRenderCommand end = base;
 					end.kind = AptRenderCommand::Kind::MaskEnd;
-					out.commands.push_back(end);
+					out.commands.push_back(std::move(end));
 				}
 				break;
 			}
@@ -461,7 +466,7 @@ void Apt::buildRenderListImpl(AptRenderList &out, const std::string *nativeTag)
 				std::vector<AptCharacterInst *> kids = b->children();
 				for (AptCharacterInst *k : kids)
 				{
-					emit(k, M, C, level);
+					emit(k, M, C, level, nativeTag ? std::string() : childPath(inst, base.path, k));
 				}
 				break;
 			}
@@ -475,7 +480,7 @@ void Apt::buildRenderListImpl(AptRenderList &out, const std::string *nativeTag)
 	};
 	for (int lvl : loadedLevels())
 	{
-		emit(m_levels[lvl], AptMatrix(), AptColorTransform(), lvl);
+		emit(m_levels[lvl], AptMatrix(), AptColorTransform(), lvl, m_levels[lvl] && !nativeTag ? m_levels[lvl]->targetPath() : std::string());
 	}
 	out.unverified.assign(unverified.begin(), unverified.end());
 }

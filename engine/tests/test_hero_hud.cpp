@@ -5,6 +5,7 @@
 #include "HudTestUtil.h"
 
 #include "Common/PlayerHeroList.h"
+#include "GameLogic/CreateAHeroSystem.h"
 #include "Common/SpecialPower.h"
 #include "GameClient/GUI/ShellServices.h"
 #include "GameClient/InGameHud.h"
@@ -354,4 +355,90 @@ TEST_CASE("hero hud: the fortress's REVIVE buttons show the hero records and a p
 	}
 	CHECK(timerShown);
 	MESSAGE("Elendil recharge " << after.timer << ", a Palantir timer shown: " << timerShown);
+}
+
+TEST_CASE("hero hud: custom hero recruitment uses the selected Shield Maiden image")
+{
+	if (!haveWorld("custom hero recruitment image")) return;
+	std::string expectedImage;
+	SUBCASE("Shield Maiden") { expectedImage = "HICAHShieldMaiden"; }
+	SUBCASE("Female Elven Archer") { expectedImage = "HICAHFemaleElvenArcher"; }
+	SUBCASE("Missing subclass ButtonImage") { expectedImage = "BuildingNoArt"; }
+	SharedWorld &s = shared();
+	HeroHudRig h(s);
+	const auto context = s.world->enterContext();
+	REQUIRE(TheCreateAHeroSystem);
+	CreateAHeroHero hero;
+	bool found = false;
+	for (size_t c = 0; c < TheCreateAHeroSystem->classes().size(); ++c)
+		for (size_t sub = 0; sub < TheCreateAHeroSystem->classes()[c].subClasses.size(); ++sub)
+			if (TheCreateAHeroSystem->classes()[c].subClasses[sub].buttonImage == (expectedImage == "BuildingNoArt" ? "HICAHShieldMaiden" : expectedImage))
+			{
+				hero.classIndex = c;
+				hero.subClassIndex = sub;
+				found = true;
+			}
+	REQUIRE(found);
+	auto *subclass = const_cast<CreateAHeroSubClass *>(TheCreateAHeroSystem->subClass(hero.classIndex, hero.subClassIndex));
+	REQUIRE(subclass);
+	struct RestoreImage { CreateAHeroSubClass &sub; std::string image; ~RestoreImage() { sub.buttonImage = image; } } restoreImage{ *subclass, subclass->buttonImage };
+	if (expectedImage == "BuildingNoArt") subclass->buttonImage.clear();
+	hero.name = u"Haley";
+	hero.uniqueID = "hud-shield-maiden";
+	h.rig.game->logic().createAHeroes().assign(*h.rig.local, hero);
+	h.rig.game->logic().createAHeroes().startGame();
+	const Coord3D c = h.rig.freeSpot(2800, 1400, 300.0f);
+	Object *keep = h.rig.make("MenFortressCitadel", c.x, c.y);
+	REQUIRE(keep);
+	h.frames(20);
+	h.hud->setWindowSize(1024, 768);
+	h.rig.view.setScreen(1024, 768);
+	h.select(keep);
+	bool pushed = false;
+	for (const ControlBarButton &button : h.buttons(GUI_COMMAND_PUSH_VISIBLE_COMMAND_RANGE))
+		if (!pushed && button.image == "UCCommon_GoodHeroes") pushed = h.hud->controlBar().pressButton(button.slot, button.inPalantir);
+	REQUIRE(pushed);
+	h.frames(5);
+	bool sawHero = false;
+	for (const ControlBarButton &button : h.buttons(GUI_COMMAND_REVIVE))
+	{
+		const auto &records = h.rig.local->heroes().records();
+		if (button.reviveIndex >= 0 && records.at(button.reviveIndex).templateName == "CreateAHero")
+		{
+			CHECK(button.image == expectedImage);
+			sawHero = true;
+		}
+	}
+	CHECK(sawHero);
+	// A mod-defined template with the same kind must select the subclass too.
+	auto &things = h.rig.game->logic().things();
+	const ThingTemplate *original = things.findTemplate("CreateAHero");
+	REQUIRE(original);
+	ThingTemplate *mod = things.newTemplate("ModShieldHero");
+	mod->copyFrom(original);
+	int heroIndex = -1;
+	for (size_t i = 0; i < h.rig.local->heroes().size(); ++i)
+		if (h.rig.local->heroes().at((int)i)->templateName == "CreateAHero") heroIndex = (int)i;
+	REQUIRE(heroIndex != -1);
+	// A mod also lists its custom template in the faction's buildable heroes.
+	PlayerTemplate *faction = const_cast<PlayerTemplate *>(h.rig.local->getPlayerTemplate());
+	REQUIRE(faction);
+	struct RestoreHeroes
+	{
+		PlayerTemplate &faction;
+		std::vector<std::string> names;
+		~RestoreHeroes() { faction.m_buildableHeroesMP = names; }
+	} restore{ *faction, faction->m_buildableHeroesMP };
+	for (std::string &name : faction->m_buildableHeroesMP)
+		if (name == "CreateAHero") name = "ModShieldHero";
+	h.rig.local->heroes().at(heroIndex)->templateName = "ModShieldHero";
+	h.frames(5);
+	bool sawModHero = false;
+	for (const ControlBarButton &button : h.buttons(GUI_COMMAND_REVIVE))
+		if (button.reviveIndex == heroIndex)
+		{
+			CHECK(button.image == expectedImage);
+			sawModHero = true;
+		}
+	CHECK(sawModHero);
 }
