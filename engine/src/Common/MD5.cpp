@@ -7,6 +7,10 @@
 #include <fstream>
 #include <vector>
 
+#ifdef __APPLE__
+#include <CommonCrypto/CommonDigest.h>
+#endif
+
 namespace
 {
 const std::uint32_t K[64] = {
@@ -125,6 +129,11 @@ std::string MD5::ofBytes(const void *data, size_t size)
 	return md5.finalHex();
 }
 
+#if defined(__APPLE__) && defined(__clang__)
+// MD5 is the pinned archive policy's algorithm, not a new security choice.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
 std::string MD5::ofFile(const std::string &path, std::string *error)
 {
 	std::ifstream in(std::filesystem::u8path(path), std::ios::binary);
@@ -136,7 +145,18 @@ std::string MD5::ofFile(const std::string &path, std::string *error)
 		}
 		return std::string();
 	}
+	// Keep the complete file read and RFC 1321 digest. Apple's public streaming
+	// implementation accelerates archive verification without trusting a cache.
+#ifdef __APPLE__
+	CC_MD5_CTX md5;
+	if (CC_MD5_Init(&md5) != 1)
+	{
+		if (error) *error = "CommonCrypto MD5 initialization failed for " + path;
+		return std::string();
+	}
+#else
 	MD5 md5;
+#endif
 	std::vector<char> buffer(1 << 20);
 	while (in)
 	{
@@ -144,7 +164,17 @@ std::string MD5::ofFile(const std::string &path, std::string *error)
 		std::streamsize got = in.gcount();
 		if (got > 0)
 		{
+#ifdef __APPLE__
+			// Each read is at most 1 MiB, so CC_LONG cannot truncate even when
+			// the complete file exceeds 4 GiB.
+			if (CC_MD5_Update(&md5, buffer.data(), static_cast<CC_LONG>(got)) != 1)
+			{
+				if (error) *error = "CommonCrypto MD5 update failed for " + path;
+				return std::string();
+			}
+#else
 			md5.update(buffer.data(), (size_t)got);
+#endif
 		}
 	}
 	if (!in.eof())
@@ -155,5 +185,26 @@ std::string MD5::ofFile(const std::string &path, std::string *error)
 		}
 		return std::string();
 	}
+#ifdef __APPLE__
+	unsigned char digest[CC_MD5_DIGEST_LENGTH];
+	if (CC_MD5_Final(digest, &md5) != 1)
+	{
+		if (error) *error = "CommonCrypto MD5 finalization failed for " + path;
+		return std::string();
+	}
+	static const char *hex = "0123456789abcdef";
+	std::string out;
+	out.reserve(CC_MD5_DIGEST_LENGTH * 2);
+	for (unsigned char byte : digest)
+	{
+		out.push_back(hex[byte >> 4]);
+		out.push_back(hex[byte & 15]);
+	}
+	return out;
+#else
 	return md5.finalHex();
+#endif
 }
+#if defined(__APPLE__) && defined(__clang__)
+#pragma clang diagnostic pop
+#endif

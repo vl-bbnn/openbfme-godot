@@ -6,7 +6,11 @@
 #include "Common/MiniJson.h"
 #include "Common/RetailArchivePolicy.h"
 
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <string>
+#include <vector>
 
 TEST_CASE("MD5 matches RFC 1321 test vectors")
 {
@@ -14,6 +18,55 @@ TEST_CASE("MD5 matches RFC 1321 test vectors")
 	CHECK(MD5::ofBytes("abc", 3) == "900150983cd24fb0d6963f7d28e17f72");
 	std::string digits = "12345678901234567890123456789012345678901234567890123456789012345678901234567890";
 	CHECK(MD5::ofBytes(digits.data(), digits.size()) == "57edf4a22be3c955ac49da2e2107b67a");
+}
+
+TEST_CASE("file MD5 matches the portable digest across padding and read boundaries")
+{
+	const auto directory = std::filesystem::temp_directory_path() / ("openbfme-md5-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+	REQUIRE(std::filesystem::create_directory(directory));
+	struct Cleanup
+	{
+		std::filesystem::path path;
+		~Cleanup() { std::error_code error; std::filesystem::remove_all(path, error); }
+	} cleanup{ directory };
+	const auto file = directory / std::filesystem::u8path(u8"hash input-\u0442\u0435\u0441\u0442.bin");
+	const size_t readSize = 1 << 20;
+	std::vector<unsigned char> bytes(readSize * 2 + 17);
+	for (size_t i = 0; i < bytes.size(); ++i) bytes[i] = static_cast<unsigned char>((i * 13 + 7) % 256);
+	for (size_t length : { size_t(0), size_t(1), size_t(55), size_t(56), size_t(63), size_t(64), size_t(65), size_t(127), size_t(128), size_t(129), readSize - 1, readSize, readSize + 1, bytes.size() })
+	{
+		std::ofstream out(file, std::ios::binary | std::ios::trunc);
+		REQUIRE(out.is_open());
+		out.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(length));
+		out.close();
+		REQUIRE_FALSE(out.fail());
+		std::string error = "unchanged";
+		CHECK(MD5::ofFile(file.u8string(), &error) == MD5::ofBytes(bytes.data(), length));
+		CHECK(error == "unchanged");
+	}
+	{
+		std::ofstream out(file, std::ios::binary | std::ios::trunc);
+		out << "abc";
+		out.close();
+		REQUIRE_FALSE(out.fail());
+	}
+	CHECK(MD5::ofFile(file.u8string(), nullptr) == "900150983cd24fb0d6963f7d28e17f72");
+	const auto originalTime = std::filesystem::last_write_time(file);
+	{
+		std::ofstream out(file, std::ios::binary | std::ios::trunc);
+		out << "abd";
+		out.close();
+		REQUIRE_FALSE(out.fail());
+	}
+	std::filesystem::last_write_time(file, originalTime);
+	CHECK(std::filesystem::file_size(file) == 3);
+	CHECK(std::filesystem::last_write_time(file) == originalTime);
+	CHECK(MD5::ofFile(file.u8string(), nullptr) == MD5::ofBytes("abd", 3));
+	const std::string missing = (directory / "missing.bin").u8string();
+	std::string error;
+	CHECK(MD5::ofFile(missing, &error).empty());
+	CHECK(error == "could not open " + missing + " for hashing");
+	CHECK(MD5::ofFile(missing, nullptr).empty());
 }
 
 TEST_CASE("JSON reader parses what the policies use and rejects malformed input")
