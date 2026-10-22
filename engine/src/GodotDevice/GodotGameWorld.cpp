@@ -90,6 +90,7 @@
 #include "GameLogic/Object/ExperienceTracker.h"
 #include "GodotDevice/GodotMapTerrain.h"
 #include "GodotDevice/GodotTiming.h"
+#include "GodotDevice/GodotProcessMemory.h"
 #include "GodotDevice/GodotRetailFileSystem.h"
 #include "GodotDevice/GodotW3DInstancer.h"
 #include "GodotDevice/GodotW3DMaterial.h"
@@ -334,6 +335,7 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("get_stats"), &GameWorld::get_stats);
 	ClassDB::bind_method(D_METHOD("get_frame_timings"), &GameWorld::get_frame_timings);
 	ClassDB::bind_method(D_METHOD("get_thread_cpu_ms"), &GameWorld::get_thread_cpu_ms);
+	ClassDB::bind_method(D_METHOD("get_process_memory"), &GameWorld::get_process_memory);
 	ClassDB::bind_method(D_METHOD("get_logic_wait_sites"), &GameWorld::get_logic_wait_sites);
 	ClassDB::bind_method(D_METHOD("is_logic_held"), &GameWorld::is_logic_held);
 	ClassDB::bind_method(D_METHOD("get_client_window_stats"), &GameWorld::get_client_window_stats);
@@ -3730,6 +3732,25 @@ Dictionary GameWorld::get_stats() const
 double GameWorld::get_thread_cpu_ms() const
 {
 	return timing::threadCpuMs();
+}
+
+Dictionary GameWorld::get_process_memory() const
+{
+	const diagnostics::ProcessMemory m = diagnostics::processMemory();
+	Dictionary out;
+	out["available"] = m.available;
+	out["backend"] = String::utf8(m.backend);
+	out["status"] = String::utf8(m.status);
+	out["query_result"] = m.queryResult;
+	out["returned_words"] = m.returnedWords;
+	out["required_words"] = m.requiredWords;
+	out["resident_bytes"] = m.residentBytes;
+	out["resident_peak_bytes"] = m.residentPeakBytes;
+	out["physical_footprint_bytes"] = m.physicalFootprintBytes;
+	out["physical_footprint_peak_bytes"] = m.physicalFootprintPeakBytes;
+	out["compressed_bytes"] = m.compressedBytes;
+	out["page_size_bytes"] = m.pageSizeBytes;
+	return out;
 }
 
 Dictionary GameWorld::get_frame_timings() const

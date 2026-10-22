@@ -97,7 +97,11 @@
    "glob": "src/GodotDevice/GodotTiming.cpp",
    "reason": "wall-clock diagnostics of the device layer (load and frame timings in reports): never simulation state"
   },
+
   {
+   "glob": "src/GodotDevice/GodotProcessMemory.cpp",
+   "reason": "explicit device process-memory diagnostics: OS byte counters only, never simulation state or per-frame sampling"
+  },  {
    "glob": "<build>/generated/*",
    "reason": "generated sources: the byte tables of the embedded data files (EmbeddedData.gen.cpp, cmake/EmbedFiles.cmake) and the build's version strings (BuildVersion.gen.cpp, cmake/BuildVersion.cmake, lane RELEASE-1): no arithmetic"
   },

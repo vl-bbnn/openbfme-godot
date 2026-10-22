@@ -444,6 +444,8 @@ public:
 	Dictionary get_frame_timings() const;
 	// Calling-thread CPU clock, without reading or waiting for simulation state (also available before a map is loaded).
 	double get_thread_cpu_ms() const;
+	// Explicit OS memory snapshot in bytes; unavailable fields are -1. No automatic per-frame query.
+	Dictionary get_process_memory() const;
 	// lane RENDERWAIT-1: the wait log of this game (LiveGame::logicWaitSites): [{site, count, total_ms, worst_ms}], worst total first; and its reset
 	Array get_logic_wait_sites() const;
 	void reset_logic_wait_sites();

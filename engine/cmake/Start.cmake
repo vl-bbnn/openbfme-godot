@@ -23,4 +23,5 @@ set(OPENBFME_START_TESTS
 # the Godot device classes of the lane (added to the openbfme extension)
 set(OPENBFME_START_GODOT_SOURCES
     src/GodotDevice/GodotTiming.cpp
+    src/GodotDevice/GodotProcessMemory.cpp
 )
