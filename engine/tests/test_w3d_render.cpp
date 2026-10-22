@@ -569,6 +569,157 @@ TEST_CASE("asset manager: a malformed file is reported once in Faults and its na
 	CHECK(am.Faults().size() == 1);
 }
 
+namespace
+{
+std::vector<std::uint8_t> absentChildModel(const std::vector<SynthSub> &children,
+	const std::vector<SynthSub> &aggregates = {})
+{
+	SynthMesh mesh = quad();
+	mesh.Container = "ABPROP";
+	mesh.Name = "BODY";
+	auto bytes = meshChunk(mesh);
+	append(bytes, hierarchyChunk("ABPROP", { pivot("ROOTTRANSFORM", 0xFFFFFFFFu, 0, 0, 0) }));
+	append(bytes, hlodChunk("ABPROP", "ABPROP", children, aggregates));
+	return bytes;
+}
+}
+
+TEST_CASE("asset manager: absent children of a parsed container are explicit null children, not invented geometry")
+{
+	// BFME2 donor hlod.cpp:1116-1122,1129-1137 (ac259e57): both LODs and aggregates omit a null render object.
+	MemoryFileSource fs;
+	fs.Add("art\\w3d\\ab\\abprop.w3d", absentChildModel({ { "ABPROP.BODY", 0 }, { "ABPROP.GONE", 0 } },
+		{ { "ABPROP.GONE", 0 } }));
+	WW3DAssetManager am(fs);
+	std::string error;
+	const auto *p = am.Create_Render_Obj("ABPROP", &error);
+	REQUIRE_MESSAGE(p, error);
+	REQUIRE(p->SubObjects.size() == 3);
+	CHECK_FALSE(p->HierarchyMissing);
+	CHECK(p->SubObjects[0].Type == RenderSubObject::SUB_MESH);
+	REQUIRE(p->SubObjects[0].Mesh);
+	CHECK(p->SubObjects[0].Mesh->Get_Name() == "ABPROP.BODY");
+	for (const auto i : { 1, 2 })
+	{
+		const auto &s = p->SubObjects[i];
+		CHECK(s.Type == RenderSubObject::SUB_ABSENT);
+		CHECK(s.Name == "ABPROP.GONE");
+		CHECK(s.BoneIndex == 0);
+		CHECK(s.Aggregate == (i == 2));
+		CHECK(s.Mesh == nullptr);
+		CHECK(s.Box == nullptr);
+		CHECK(s.Emitter == nullptr);
+		CHECK(s.Reason == "no prototype in the parsed canonical files; omitted as a null child (BFME2 HLOD constructor; RotWK parity unverified, S-001)");
+	}
+	CHECK(am.Faults().empty());
+	CHECK(am.Create_Render_Obj("abprop", &error) == p);
+}
+
+TEST_CASE("asset manager: absent-child classification preserves missing-file, bad-bone and nested-HLOD errors")
+{
+	MemoryFileSource fs;
+	fs.Add("art\\w3d\\ab\\abprop.w3d", absentChildModel({ { "MISSING.PART", 0 }, { "ABPROP.GONE", 1 },
+		{ "NESTED", 0 }, { "ABPROP.NESTED", 0 } }));
+	fs.Add("art\\w3d\\ne\\nested.w3d", hlodChunk("NESTED", "", {}));
+	append(fs.Files["art\\w3d\\ab\\abprop.w3d"], hlodChunk("ABPROP.NESTED", "", {}));
+	WW3DAssetManager am(fs);
+	std::string error;
+	const auto *p = am.Create_Render_Obj("ABPROP", &error);
+	REQUIRE_MESSAGE(p, error);
+	REQUIRE(p->SubObjects.size() == 4);
+	for (const auto &s : p->SubObjects) CHECK(s.Type == RenderSubObject::SUB_UNRESOLVED);
+	CHECK(p->SubObjects[0].Reason == "no prototype of that name is registered; canonical files are missing");
+	CHECK(p->SubObjects[1].Reason == "bone 1 is outside the hierarchy of 1 pivots");
+	CHECK(p->SubObjects[2].Reason == "names an HLOD (nested HLODs are not supported)");
+	CHECK(p->SubObjects[3].Reason == "no prototype resolved: a canonical file contains unsupported prototype data");
+	CHECK(am.Faults().empty());
+}
+
+TEST_CASE("asset manager: absent-child classification preserves new and cached parse failures")
+{
+	MemoryFileSource fs;
+	fs.Add("art\\w3d\\ab\\abprop.w3d", absentChildModel({ { "ABPROP.GONE", 0 } }, { { "ABPROP.GONE", 0 } }));
+	fs.Add("art\\w3d\\ab\\abprop.gone.w3d", { 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0x7F });
+	WW3DAssetManager am(fs);
+	std::string error;
+	const auto *p = am.Create_Render_Obj("ABPROP", &error);
+	REQUIRE_MESSAGE(p, error);
+	REQUIRE(p->SubObjects.size() == 2);
+	for (const auto &s : p->SubObjects)
+	{
+		CHECK(s.Type == RenderSubObject::SUB_UNRESOLVED);
+		CHECK(s.Reason == "no prototype resolved: a canonical file failed to load (see asset faults)");
+	}
+	REQUIRE(am.Faults().size() == 1);
+	CHECK(am.Faults()[0] == "art\\w3d\\ab\\abprop.gone.w3d: malformed top-level chunk");
+}
+
+TEST_CASE("asset manager: absent-child classification preserves read failures even without a source error string")
+{
+	class BrokenRead : public MemoryFileSource
+	{
+	public:
+		bool Read(const std::string &path, std::vector<std::uint8_t> &out, std::string *error) override
+		{
+			if (path == "art\\w3d\\ab\\abprop.gone.w3d") return false;
+			return MemoryFileSource::Read(path, out, error);
+		}
+	} fs;
+	fs.Add("art\\w3d\\ab\\abprop.w3d", absentChildModel({ { "ABPROP.GONE", 0 } }, { { "ABPROP.GONE", 0 } }));
+	fs.Add("art\\w3d\\ab\\abprop.gone.w3d", {});
+	WW3DAssetManager am(fs);
+	std::string error;
+	const auto *p = am.Create_Render_Obj("ABPROP", &error);
+	REQUIRE_MESSAGE(p, error);
+	REQUIRE(p->SubObjects.size() == 2);
+	for (const auto &s : p->SubObjects)
+	{
+		CHECK(s.Type == RenderSubObject::SUB_UNRESOLVED);
+		CHECK(s.Reason == "no prototype resolved: a canonical file failed to load (see asset faults)");
+	}
+	REQUIRE(am.Faults().size() == 1);
+	CHECK(am.Faults()[0] == "failed to read art\\w3d\\ab\\abprop.gone.w3d");
+}
+
+TEST_CASE("asset manager: unknown chunks, ShdMesh prototypes and empty files cannot establish child absence")
+{
+	for (const bool shd : { false, true })
+	{
+		MemoryFileSource fs;
+		auto bytes = absentChildModel({ { "ABPROP.GONE", 0 } });
+		ChunkWriter extra;
+		if (shd)
+		{
+			ChunkWriter body;
+			body.chunk(W3D_CHUNK_SHDMESH_NAME, { 'S', 0 });
+			W3dShdMeshHeaderStruct header = {};
+			header.Version = 0x00010000;
+			body.chunk(W3D_CHUNK_SHDMESH_HEADER, ChunkWriter::of(header));
+			extra.wrapper(W3D_CHUNK_SHDMESH, body);
+		}
+		else extra.chunk(0x7F000001, {});
+		append(bytes, extra.bytes);
+		fs.Add("art\\w3d\\ab\\abprop.w3d", bytes);
+		WW3DAssetManager am(fs);
+		std::string error;
+		const auto *p = am.Create_Render_Obj("ABPROP", &error);
+		REQUIRE_MESSAGE(p, error);
+		REQUIRE(p->SubObjects.size() == 1);
+		CHECK(p->SubObjects[0].Type == RenderSubObject::SUB_UNRESOLVED);
+		CHECK(p->SubObjects[0].Reason == "no prototype resolved: a canonical file contains unsupported prototype data");
+		CHECK(am.Faults().empty());
+	}
+	MemoryFileSource fs;
+	fs.Add("art\\w3d\\ab\\abprop.w3d", absentChildModel({ { "EMPTY.PART", 0 } }));
+	fs.Add("art\\w3d\\em\\empty.w3d", {});
+	WW3DAssetManager am(fs);
+	std::string error;
+	const auto *p = am.Create_Render_Obj("ABPROP", &error);
+	REQUIRE_MESSAGE(p, error);
+	REQUIRE(p->SubObjects.size() == 1);
+	CHECK(p->SubObjects[0].Type == RenderSubObject::SUB_UNRESOLVED);
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 
 TEST_CASE("texture resolution: BFME1 camp floors accept PNG and JPEG replacements")

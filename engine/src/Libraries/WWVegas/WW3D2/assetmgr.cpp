@@ -281,8 +281,8 @@ const W3DFileContents *WW3DAssetManager::Load_File(const std::string &path, std:
 		std::string readError;
 		if (!Source.Read(path, bytes, &readError))
 		{
-			entry.Error = readError;
-			FaultList.push_back(readError);
+			entry.Error = readError.empty() ? "failed to read " + path : readError;
+			FaultList.push_back(entry.Error);
 		}
 		else
 		{
@@ -308,9 +308,10 @@ const W3DFileContents *WW3DAssetManager::Load_File(const std::string &path, std:
 }
 
 // The file named after a stem; nullptr (without an error) when no such file exists. A malformed file is nullptr as well,
-// and is remembered in Faults().
-const W3DFileContents *WW3DAssetManager::Try_Stem_File(const std::string &stem)
+// and is remembered in Faults(). loadFailed distinguishes that failure (including a cached one) from an absent file.
+const W3DFileContents *WW3DAssetManager::Try_Stem_File(const std::string &stem, bool *loadFailed)
 {
+	if (loadFailed) *loadFailed = false;
 	if (stem.empty())
 	{
 		return nullptr;
@@ -321,7 +322,9 @@ const W3DFileContents *WW3DAssetManager::Try_Stem_File(const std::string &stem)
 		return nullptr;
 	}
 	std::string error;
-	return Load_File(path, &error);
+	const W3DFileContents *file = Load_File(path, &error);
+	if (loadFailed) *loadFailed = file == nullptr;
+	return file;
 }
 
 const HTreeClass *WW3DAssetManager::Get_HTree(const std::string &name, std::string *error)
@@ -401,12 +404,22 @@ void WW3DAssetManager::Resolve_Sub_Object(const std::string &name, int bone, boo
 	}
 	const std::string lower = AsciiStringUtil::lowered(name);
 	const size_t dot = lower.find('.');
+	bool containerFailed = false, wholeNameFailed = false;
+	bool knownFile = false, unsupported = false;
+	auto inspectFile = [&](const W3DFileContents &f) {
+		knownFile = knownFile || !f.Meshes.empty() || !f.Boxes.empty() || !f.HLods.empty() || !f.Emitters.empty();
+		// Unknown chunks and unimplemented ShdMesh prototypes prevent an absence claim. A named emitter or nested
+		// HLOD in a container also must not be misreported as absent just because its canonical file is missing.
+		unsupported = unsupported || !f.OtherChunks.empty() || !f.ShdMeshes.empty() || f.Find_HLod(name);
+		for (const ParticleEmitterDefClass &e : f.Emitters)
+			if (AsciiStringUtil::compareNoCase(e.Name, name) == 0) unsupported = true;
+	};
 
 	// "container.name": meshes and boxes live in the file named after the container (Rva00970EC0Proto_Load,
 	// Rva00972480Proto_LoadBox); emitters, bare meshes and HLODs in the file named after the whole name.
 	if (dot != std::string::npos)
 	{
-		if (const W3DFileContents *f = Try_Stem_File(lower.substr(0, dot)))
+		if (const W3DFileContents *f = Try_Stem_File(lower.substr(0, dot), &containerFailed))
 		{
 			if (const MeshModelClass *m = f->Find_Mesh(name))
 			{
@@ -420,9 +433,10 @@ void WW3DAssetManager::Resolve_Sub_Object(const std::string &name, int bone, boo
 				out.Box = b;
 				return;
 			}
+			inspectFile(*f);
 		}
 	}
-	if (const W3DFileContents *f = Try_Stem_File(lower))
+	if (const W3DFileContents *f = Try_Stem_File(lower, &wholeNameFailed))
 	{
 		if (f->Find_HLod(name))
 		{
@@ -450,8 +464,23 @@ void WW3DAssetManager::Resolve_Sub_Object(const std::string &name, int bone, boo
 				return;
 			}
 		}
+		inspectFile(*f);
 	}
-	out.Reason = "no prototype of that name is registered (ZH skips such a sub object silently)";
+	if (knownFile && !containerFailed && !wholeNameFailed && !unsupported)
+	{
+		// Donor fact: Open-BFME-2 ac259e57, WW3D2/hlod.cpp:1116-1122,1129-1137 (BFME2 constructor 0x0019FC80)
+		// adds a child only when Create_Render_Obj returns non-null. The retail BFME2 catalog and W3D can contain
+		// dangling child references. Inference for this port: retain an explicit absent-child warning, without
+		// inventing geometry. RotWK constructor parity remains unverified (S-001); faults/unknown types stay errors.
+		out.Type = RenderSubObject::SUB_ABSENT;
+		out.Reason = "no prototype in the parsed canonical files; omitted as a null child (BFME2 HLOD constructor; RotWK parity unverified, S-001)";
+	}
+	else if (containerFailed || wholeNameFailed)
+		out.Reason = "no prototype resolved: a canonical file failed to load (see asset faults)";
+	else if (unsupported)
+		out.Reason = "no prototype resolved: a canonical file contains unsupported prototype data";
+	else
+		out.Reason = "no prototype of that name is registered; canonical files are missing";
 }
 
 const RenderObjPrototype *WW3DAssetManager::Create_Render_Obj(const std::string &name, std::string *error)

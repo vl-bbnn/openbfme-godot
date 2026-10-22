@@ -246,6 +246,48 @@ struct RawPivot
 
 } // namespace
 
+TEST_CASE("retail models: RuinTwr retains three real meshes and explicitly reports its absent OB child")
+{
+	NEEDS_RETAIL("RuinTwr null child");
+	// Independent BFME2 asset.dat inventory: RUINTWR has three meshes, one hierarchy, one HLOD and no .OB
+	// prototype. The HLOD names .OB at bone 15. BFME2 hlod.cpp:1116-1122 (ac259e57) omits a null child.
+	ArchiveW3DFileSource source(*mount->fs);
+	WW3DAssetManager am(source);
+	std::string error;
+	const auto *p = am.Create_Render_Obj("RuinTwr", &error);
+	REQUIRE_MESSAGE(p, error);
+	CHECK_FALSE(p->HierarchyMissing);
+	REQUIRE(p->SubObjects.size() == 4);
+	std::set<std::string> meshes;
+	std::vector<std::uint8_t> bytes;
+	REQUIRE(readFile(mount, "art\\w3d\\ru\\ruintwr.w3d", bytes));
+	for (const auto &sub : p->SubObjects)
+	{
+		if (sub.Type == RenderSubObject::SUB_MESH)
+		{
+			REQUIRE(sub.Mesh);
+			const auto raw = rawMeshCounts(bytes, sub.Name);
+			REQUIRE(raw.Found);
+			MeshRenderData data;
+			REQUIRE_MESSAGE(Build_Mesh_Render_Data(*sub.Mesh, data, &error), error);
+			CHECK(data.NumVertices == raw.HeaderVertices);
+			CHECK(data.NumTriangles == raw.HeaderTris);
+			meshes.insert(sub.Name);
+		}
+		else
+		{
+			CHECK(sub.Type == RenderSubObject::SUB_ABSENT);
+			CHECK(sub.Name == "RUINTWR.OB");
+			CHECK(sub.BoneIndex == 15);
+			CHECK_FALSE(sub.Aggregate);
+			CHECK(sub.Mesh == nullptr);
+			CHECK(sub.Reason == "no prototype in the parsed canonical files; omitted as a null child (BFME2 HLOD constructor; RotWK parity unverified, S-001)");
+		}
+	}
+	CHECK(meshes == std::set<std::string>{ "RUINTWR.HOUSE COLOR", "RUINTWR.RUIN TOWER", "RUINTWR.WINDOW_N01" });
+	CHECK(am.Faults().empty());
+}
+
 TEST_CASE("retail models: six models from different factions and kinds build, with header counts, resolved sub objects and textures")
 {
 	NEEDS_RETAIL("retail models");

@@ -96,7 +96,7 @@ private:
 // emitters are particle systems (spec 3.9); both are carried so nothing is dropped silently.
 struct RenderSubObject
 {
-	enum Kind { SUB_MESH, SUB_BOX, SUB_EMITTER, SUB_UNRESOLVED };
+	enum Kind { SUB_MESH, SUB_BOX, SUB_EMITTER, SUB_UNRESOLVED, SUB_ABSENT };
 	std::string Name;       // as the HLOD names it
 	int BoneIndex = 0;
 	bool Aggregate = false; // from the aggregate array (attached after the LOD models)
@@ -104,7 +104,7 @@ struct RenderSubObject
 	const MeshModelClass *Mesh = nullptr;
 	const W3dBoxStruct *Box = nullptr;
 	const ParticleEmitterDefClass *Emitter = nullptr;
-	std::string Reason;     // why a sub object is unresolved (ZH skips a null render object silently; here it is reported)
+	std::string Reason;     // why a sub object is unresolved or absent; neither is dropped from the diagnostic report
 };
 
 // Create_Render_Obj's result: a bare mesh (one default pivot) or an HLOD with its hierarchy and sub objects.
@@ -168,6 +168,6 @@ private:
 	// name's result never changes; a drawable's model condition change asks for its animation by name, which probed the file system every time.
 	std::unordered_map<std::string, const HAnimClass *> AnimByName;
 
-	const W3DFileContents *Try_Stem_File(const std::string &stem);
+	const W3DFileContents *Try_Stem_File(const std::string &stem, bool *loadFailed = nullptr);
 	void Resolve_Sub_Object(const std::string &name, int bone, bool aggregate, const HTreeClass &tree, RenderSubObject &out);
 };

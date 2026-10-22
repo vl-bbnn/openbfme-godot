@@ -67,6 +67,7 @@ const char *kindName(RenderSubObject::Kind k)
 	case RenderSubObject::SUB_MESH: return "mesh";
 	case RenderSubObject::SUB_BOX: return "box";
 	case RenderSubObject::SUB_EMITTER: return "emitter";
+	case RenderSubObject::SUB_ABSENT: return "absent";
 	default: return "unresolved";
 	}
 }
@@ -552,6 +553,13 @@ int64_t W3DInstancer::build_model(const String &model_name)
 		{
 			s["reason"] = toGodot(sub.Reason);
 			errors.push_back(toGodot("sub object " + sub.Name + " unresolved: " + sub.Reason));
+		}
+		else if (sub.Type == RenderSubObject::SUB_ABSENT)
+		{
+			s["reason"] = toGodot(sub.Reason);
+			const std::string message = "sub object " + sub.Name + " absent: " + sub.Reason;
+			notes.push_back(toGodot(message));
+			warn(name + ": " + message);
 		}
 		else if (sub.Type == RenderSubObject::SUB_EMITTER)
 		{
