@@ -3180,6 +3180,7 @@ Dictionary GameWorld::prepare_initial_models(bool construction)
 				if (settings.forceModelsToFollowWeather && settings.snowy) flag("SNOW");
 				if (!errors.is_empty()) return out;
 				out["conditions"] = toGodot(ModelCondition::describe(flags));
+				Array particleSystems;
 				for (const ThingTemplate::Nugget &n : tt->getFinalOverride()->drawModules().nuggets())
 				{
 					const auto *data = dynamic_cast<const W3DModelDrawModuleData *>(n.data.get());
@@ -3194,6 +3195,24 @@ Dictionary GameWorld::prepare_initial_models(bool construction)
 					state["module"] = toGodot(n.tag);
 					state["model"] = toGodot(info->modelName());
 					state["conditions"] = toGodot(ModelCondition::describe(info->conditions));
+					// Discover references in selected model/animation data. This does
+					// not execute scripts or follow later animation transitions.
+					const AnimationStateInfo *animation = data->findBestAnimationState(flags);
+					Array stateParticles;
+					for (const auto *list : { &info->particleSysBones, animation ? &animation->particleSysBones : nullptr })
+					{
+						if (!list) continue;
+						for (const ParticleSysBoneInfo &bone : *list)
+						{
+							if (bone.onlyIfOnWater) continue; // current LiveFX S-682: no water query
+							if (AsciiStringUtil::compareNoCase(bone.systemName, "None") == 0) continue;
+							const String name = toGodot(bone.systemName);
+							if (!stateParticles.has(name)) stateParticles.push_back(name);
+							if (!particleSystems.has(name)) particleSystems.push_back(name);
+						}
+					}
+					state["particle_systems"] = stateParticles;
+					state["animation_conditions"] = animation ? toGodot(ModelCondition::describe(animation->conditions)) : String();
 					states.push_back(state);
 					// W3DScriptedModelDraw::applyModelState reads modelName(), not
 					// every ExtraMesh alternative. None intentionally draws nothing.
@@ -3201,6 +3220,7 @@ Dictionary GameWorld::prepare_initial_models(bool construction)
 					models.push_back({ info->modelName(), info->textures });
 				}
 				out["states"] = states;
+				out["particle_systems"] = particleSystems;
 			}
 			else
 			{

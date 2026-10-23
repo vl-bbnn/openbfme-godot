@@ -497,6 +497,7 @@ void FXPlayer::_bind_methods()
 {
 	ClassDB::bind_method(D_METHOD("setup", "fs"), &FXPlayer::setup);
 	ClassDB::bind_method(D_METHOD("preload_textures", "budget_ms"), &FXPlayer::preload_textures);
+	ClassDB::bind_method(D_METHOD("prepare_sprite_resources", "names"), &FXPlayer::prepare_sprite_resources);
 	ClassDB::bind_method(D_METHOD("list_particle_systems"), &FXPlayer::list_particle_systems);
 	ClassDB::bind_method(D_METHOD("list_fx_lists"), &FXPlayer::list_fx_lists);
 	ClassDB::bind_method(D_METHOD("play_particle_system", "name", "position"), &FXPlayer::play_particle_system);
@@ -868,6 +869,137 @@ Ref<Shader> FXPlayer::shaderFor(const std::string &key, const std::string &code)
 	return s;
 }
 
+Ref<Shader> FXPlayer::spriteShaderFor(int shader, bool ground)
+{
+	return shaderFor("sprite|" + std::to_string(shader) + "|" + (ground ? "g" : "b") + (m_soft ? "|soft" : ""), spriteShader(shader, ground, m_soft));
+}
+
+Dictionary FXPlayer::prepare_sprite_resources(const PackedStringArray &names)
+{
+	Dictionary out;
+	Array errors, variants, skipped;
+	out["ok"] = false;
+	out["errors"] = errors;
+	out["variants"] = variants;
+	out["skipped"] = skipped;
+	if (!m_playback || m_fs.is_null() || m_quad.is_null())
+	{
+		errors.push_back("sprite preparation requires a loaded FXPlayer");
+		return out;
+	}
+	// Isolated render resources only, never an entry in m_batches or playback.
+	// The caller renders this hidden node in a temporary viewport, then frees it.
+	Node3D *root = memnew(Node3D);
+	root->set_name("PreparedParticleSprites");
+	root->set_visible(false);
+	add_child(root);
+	out["node"] = root;
+	out["playback_frame_before"] = get_frame();
+	std::vector<std::string> pending;
+	for (int64_t i = 0; i < names.size(); ++i) pending.push_back(toNative(names[i]));
+	std::set<std::string> seen;
+	for (size_t i = 0; i < pending.size(); ++i)
+	{
+		const ParticleSystemTemplate *t = m_playback->particleTemplates().findTemplate(pending[i]);
+		if (!t)
+		{
+			errors.push_back(toGodot("sprite preparation: unknown particle system " + pending[i]));
+			continue;
+		}
+		if (!seen.insert(t->getName()).second) continue;
+		const ParticleSystemInfo &info = t->info();
+		const ModuleData *draw = t->module(MODULE_CATEGORY_DRAW);
+		// Dependencies can still draw when their parent's own draw is a stop.
+		// Discover references only; do not create or step any particle systems.
+		for (const std::string *dependency : { &info.m_slaveSystemName, &info.m_attachedSystemName })
+		{
+			if (!dependency->empty() && toGodot(*dependency).to_lower() != "none") pending.push_back(*dependency);
+		}
+		// Match ParticleDrawBuilder's existing non-rendered lanes. A resource
+		// optimization must neither invent their visuals nor block a game that
+		// already reports these stops. No pipeline readiness is claimed for them.
+		const char *stop = "";
+		const char *reason = nullptr;
+		if (info.m_particleType == PARTICLE_TYPE_TERRAIN_PARTICLE)
+		{
+			stop = "S-195"; reason = "terrain particle pass is not ported";
+		}
+		else if (info.m_particleType == PARTICLE_TYPE_SMUDGE || info.m_particleTypeName.compare(0, 4, "SMUD") == 0)
+		{
+			stop = "S-194"; reason = "smudge pass is not ported";
+		}
+		else if (!draw) reason = "system has no draw module";
+		else if (draw->classId == MODULE_RENDER_OBJECT_DRAW)
+		{
+			stop = "S-195"; reason = "per-particle render-object bridge is not ported";
+		}
+		if (reason)
+		{
+			Dictionary entry;
+			entry["template"] = toGodot(t->getName());
+			entry["type"] = info.m_particleType;
+			entry["draw_class"] = draw ? draw->classId : -1;
+			entry["stop"] = stop;
+			entry["reason"] = reason;
+			skipped.push_back(entry);
+			continue;
+		}
+		// ParticleDraw's CPU sprite branch. Other draw kinds are explicitly
+		// outside this probe; they must not be mistaken for prepared resources.
+		if (draw->classId != MODULE_DEFAULT_DRAW || info.m_particleType == PARTICLE_TYPE_GPU_PARTICLE || info.m_particleType == PARTICLE_TYPE_GPU_TERRAINFIRE)
+		{
+			errors.push_back(toGodot("sprite preparation: unsupported draw/type for " + t->getName()));
+			continue;
+		}
+		const Ref<Texture2D> texture = loadTexture(info.m_particleTypeName);
+		const bool missing = std::any_of(m_missing.begin(), m_missing.end(), [&](const std::string &entry) {
+			return entry == info.m_particleTypeName || entry.compare(0, info.m_particleTypeName.size() + 2, info.m_particleTypeName + " (") == 0;
+		});
+		if (missing)
+		{
+			errors.push_back(toGodot("sprite preparation: missing texture for " + t->getName() + ": " + info.m_particleTypeName));
+			continue; // keep the ordinary missing-resource report, not a silent substitute
+		}
+		Ref<Shader> shader = spriteShaderFor(info.m_shaderType, info.m_isGroundAligned);
+		Ref<ShaderMaterial> material;
+		material.instantiate();
+		material->set_shader(shader);
+		material->set_shader_parameter("tex", texture);
+		const BatchOrder order = OrderForBatch(0, 1);
+		material->set_render_priority(order.priority);
+		Ref<MultiMesh> multi;
+		multi.instantiate();
+		multi->set_transform_format(MultiMesh::TRANSFORM_3D);
+		multi->set_use_colors(true);
+		multi->set_use_custom_data(true);
+		multi->set_mesh(m_quad);
+		multi->set_instance_count(1);
+		multi->set_instance_transform(0, Transform3D());
+		multi->set_instance_color(0, Color(1, 1, 1, 1));
+		// Synthetic probe dimensions, not a particle or an emission/size sample.
+		multi->set_instance_custom_data(0, Color(64, 0, 0, 0));
+		MultiMeshInstance3D *node = memnew(MultiMeshInstance3D);
+		node->set_multimesh(multi);
+		node->set_material_override(material);
+		node->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+		node->set_custom_aabb(AABB(Vector3(-1e5f, -1e5f, -1e5f), Vector3(2e5f, 2e5f, 2e5f)));
+		node->set_sorting_offset(order.sortOffset);
+		root->add_child(node);
+		Dictionary variant;
+		variant["template"] = toGodot(t->getName());
+		variant["texture"] = toGodot(info.m_particleTypeName);
+		variant["shader"] = info.m_shaderType;
+		variant["ground_aligned"] = info.m_isGroundAligned;
+		variant["soft_particles"] = m_soft;
+		variant["shader_rid"] = (int64_t)shader->get_rid().get_id();
+		variant["mesh_rid"] = (int64_t)m_quad->get_rid().get_id();
+		variants.push_back(variant);
+	}
+	out["playback_frame_after"] = get_frame();
+	out["ok"] = errors.is_empty();
+	return out;
+}
+
 FXPlayer::Batch &FXPlayer::batchSlot(size_t index, const std::string &key, int kind)
 {
 	if (index >= m_batches.size())
@@ -1079,7 +1211,7 @@ void FXPlayer::upload(const std::vector<DrawBatch> &batches)
 			if (!bp->multiNode)
 			{
 				bp->material.instantiate();
-				bp->material->set_shader(shaderFor("sprite|" + std::to_string(m.shader) + "|" + (m.ground ? "g" : "b") + (m_soft ? "|soft" : ""), spriteShader(m.shader, m.ground, m_soft)));
+				bp->material->set_shader(spriteShaderFor(m.shader, m.ground));
 				bp->material->set_shader_parameter("tex", tex);
 				bp->multi.instantiate();
 				bp->multi->set_transform_format(MultiMesh::TRANSFORM_3D);

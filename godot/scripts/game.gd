@@ -2091,7 +2091,7 @@ func _begin_game(message: Dictionary) -> void:
 		if not prepared.simulation_unchanged:
 			_fail("preview preparation changed simulation state")
 			return
-	if OS.get_cmdline_user_args().has("--prepare-construction-pipeline"):
+	if OS.get_cmdline_user_args().has("--prepare-construction-pipeline") or OS.get_cmdline_user_args().has("--prepare-construction-fx-pipeline"):
 		if not _prepare_initial_construction_pipeline():
 			return
 	_world.visible = world_was_visible
@@ -2223,6 +2223,31 @@ func _prepare_initial_construction_pipeline() -> bool:
 	probe.render_target_update_mode = SubViewport.UPDATE_ONCE
 	add_child(probe)
 	node.reparent(probe)
+	if OS.get_cmdline_user_args().has("--prepare-construction-fx-pipeline"):
+		var fx: Node = _world.get_fx_player()
+		if fx == null:
+			_fail("construction FX preparation requires a loaded FXPlayer")
+			return false
+		var fx_before: Dictionary = fx.get_stats()
+		var fx_prepared: Dictionary = fx.prepare_sprite_resources(PackedStringArray(prepared.get("particle_systems", [])))
+		if not fx_prepared.get("ok", false):
+			_fail("construction FX preparation: " + JSON.stringify(fx_prepared))
+			return false
+		var fx_node: Node3D = fx_prepared.node
+		fx_node.reparent(probe)
+		fx_node.visible = true
+		fx_prepared.erase("node")
+		var fx_after: Dictionary = fx.get_stats()
+		fx_prepared["playback_unchanged"] = true
+		# Texture/shader cache population is expected; playback and batch state
+		# must remain unchanged. No particle stepping or fake emission is used.
+		for key in ["frame", "systems", "particles", "emitters", "batches", "sprites", "gpu_instances", "mesh_vertices", "step_us", "build_us", "upload_us"]:
+			if fx_before.get(key) != fx_after.get(key):
+				fx_prepared.playback_unchanged = false
+		if not fx_prepared.playback_unchanged:
+			_fail("construction FX preparation changed playback state")
+			return false
+		prepared["fx"] = fx_prepared
 	var camera := Camera3D.new()
 	probe.add_child(camera)
 	camera.position = Vector3(200, 180, 200)

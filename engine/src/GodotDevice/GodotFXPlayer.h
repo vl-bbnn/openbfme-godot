@@ -61,6 +61,11 @@ public:
 	// has passed (<= 0: all); returns how many are left. A texture's first use takes the decoded one (its miss reported then): what is drawn and
 	// reported does not change, only when the decoding happens (the load instead of the battle's first volley)
 	int64_t preload_textures(double budget_ms);
+	// Opt-in resource-only probe of named CPU billboard systems. Uses this
+	// player's shader cache/quad, without playback, particles or RNG. Known
+	// unrendered classes carry explicit existing stops in `skipped`; supported
+	// but unprepared draw kinds and missing resources are errors, not readiness.
+	Dictionary prepare_sprite_resources(const PackedStringArray &names);
 	void seed(int64_t seed);
 
 	// Advances the simulation by `delta` seconds of client time (fixed 30 Hz steps, at most max_steps per call) and refreshes the
@@ -131,6 +136,7 @@ private:
 	Array m_summary;
 	bool m_soft = true; ///< lane FX-3 round 2 (set from the project setting in the constructor)
 	Ref<Shader> shaderFor(const std::string &key, const std::string &code);
+	Ref<Shader> spriteShaderFor(int shader, bool ground);
 	Batch &batchSlot(size_t index, const std::string &key, int kind);
 	void upload(const std::vector<FXParticleSystem::DrawBatch> &batches);
 	void summarize(const std::vector<FXParticleSystem::DrawBatch> &batches); // lane RENDER-4
