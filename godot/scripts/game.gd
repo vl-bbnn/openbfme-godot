@@ -2094,6 +2094,9 @@ func _begin_game(message: Dictionary) -> void:
 	if OS.get_cmdline_user_args().has("--prepare-construction-pipeline") or OS.get_cmdline_user_args().has("--prepare-construction-fx-pipeline"):
 		if not _prepare_initial_construction_pipeline():
 			return
+	if OS.get_cmdline_user_args().has("--prepare-completed-construction-pipeline"):
+		if not _prepare_initial_construction_pipeline(true):
+			return
 	_world.visible = world_was_visible
 	_enter_game(rep)
 	if _online_spectate:
@@ -2198,8 +2201,9 @@ func control_bar_drawn() -> bool:
 ## GlobalData + 0xAF2 (GameData PlayIntro) is set. Each can be skipped (scripts/movie_player.gd). NOT PORTED (stop S-2341): the two arguments of the
 ## display's movie slot (ZH playLogoMovie: the minimum movie and copyright times; RotWK's meaning not read) and the preference write
 ## Optional resource-only preparation of the first builder command's opaque
-## initial construction state. The loaded game stays at the same logic frame.
-func _prepare_initial_construction_pipeline() -> bool:
+## initial or completed construction state. The loaded game stays at the same
+## logic frame; the completed phase does not prepare particle systems.
+func _prepare_initial_construction_pipeline(completed: bool = false) -> bool:
 	if OS.get_environment("OPENBFME_SHARED_SHADERS") != "1":
 		_fail("construction preparation requires the opt-in shared shader pool")
 		return false
@@ -2207,14 +2211,14 @@ func _prepare_initial_construction_pipeline() -> bool:
 	var started := Time.get_ticks_msec()
 	var frame: int = _world.get_frame()
 	var state_hash: int = _world.get_state_hash()
-	var prepared: Dictionary = _world.prepare_initial_construction()
+	var prepared: Dictionary = _world.prepare_completed_construction() if completed else _world.prepare_initial_construction()
 	if not prepared.get("ok", false):
 		_fail("construction preparation: " + JSON.stringify(prepared))
 		return false
 	var node: Node3D = prepared.node
 	prepared.erase("node")
 	var probe := SubViewport.new()
-	probe.name = "ConstructionPipelineProbe"
+	probe.name = "CompletedConstructionPipelineProbe" if completed else "ConstructionPipelineProbe"
 	var area := get_viewport().get_visible_rect().size
 	var scale := 64.0 / maxf(area.x, area.y)
 	probe.size = Vector2i(maxi(1, roundi(area.x * scale)), maxi(1, roundi(area.y * scale)))
@@ -2223,7 +2227,7 @@ func _prepare_initial_construction_pipeline() -> bool:
 	probe.render_target_update_mode = SubViewport.UPDATE_ONCE
 	add_child(probe)
 	node.reparent(probe)
-	if OS.get_cmdline_user_args().has("--prepare-construction-fx-pipeline"):
+	if not completed and OS.get_cmdline_user_args().has("--prepare-construction-fx-pipeline"):
 		var fx: Node = _world.get_fx_player()
 		if fx == null:
 			_fail("construction FX preparation requires a loaded FXPlayer")
@@ -2266,7 +2270,7 @@ func _prepare_initial_construction_pipeline() -> bool:
 	prepared["hash_after_draw"] = _world.get_state_hash()
 	prepared["simulation_unchanged"] = frame == int(prepared.frame_after_draw) and state_hash == int(prepared.hash_after_draw)
 	prepared["video_bytes"] = int(Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED))
-	print("GAME CONSTRUCTION PIPELINE READY ", JSON.stringify(prepared))
+	print("GAME COMPLETED CONSTRUCTION PIPELINE READY " if completed else "GAME CONSTRUCTION PIPELINE READY ", JSON.stringify(prepared))
 	probe.queue_free()
 	if not prepared.simulation_unchanged:
 		_fail("construction preparation changed simulation state")

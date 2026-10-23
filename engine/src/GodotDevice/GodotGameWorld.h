@@ -203,6 +203,9 @@ public:
 	// Same first command in its active initial-construction model state, using
 	// opaque materials, the owner palette and the selected texture swaps.
 	Dictionary prepare_initial_construction();
+	// Resource-only model state when that first command completes construction.
+	// Does not complete a building or run its animation scripts / particle systems.
+	Dictionary prepare_completed_construction();
 
 	// ---- lane PROD-1: production by player command ----
 	// makes an object of `template_name` for the player with index `player` (PlayerList order) at map position (x, y), ground height from the terrain;
@@ -612,7 +615,8 @@ protected:
 
 private:
 	mutable Dictionary m_observedRead; ///< net_observed_unwaiting(): the last net_observed() read where the logic was held
-	Dictionary prepare_initial_models(bool construction);
+	enum class InitialModelPhase { PlacementPreview, ActiveConstruction, CompletedConstruction };
+	Dictionary prepare_initial_models(InitialModelPhase phase);
 	Dictionary load_internal(const LiveGame::Options &lo, const String &map_name, const Dictionary &options, const Callable &progress, bool withTerrain);
 	std::unique_ptr<NewGameStart> m_start;           ///< the prepared new game (LiveGame::Options::start points into it)
 	std::vector<MapCacheEntry> m_mapCache;           ///< maps\\mapcache.ini, read by setup()

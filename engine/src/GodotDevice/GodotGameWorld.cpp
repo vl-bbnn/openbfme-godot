@@ -301,6 +301,7 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("get_placement_ghost", "template_name"), &GameWorld::get_placement_ghost);
 	ClassDB::bind_method(D_METHOD("prepare_initial_preview"), &GameWorld::prepare_initial_preview);
 	ClassDB::bind_method(D_METHOD("prepare_initial_construction"), &GameWorld::prepare_initial_construction);
+	ClassDB::bind_method(D_METHOD("prepare_completed_construction"), &GameWorld::prepare_completed_construction);
 	ClassDB::bind_method(D_METHOD("create_object", "template_name", "player", "x", "y", "angle"), &GameWorld::create_object, DEFVAL(0.0));
 	ClassDB::bind_method(D_METHOD("get_ground_height", "x", "y"), &GameWorld::get_ground_height);
 	ClassDB::bind_method(D_METHOD("queue_unit", "player", "producer", "template_name", "secondary"), &GameWorld::queue_unit, DEFVAL(false));
@@ -3110,23 +3111,30 @@ Dictionary GameWorld::get_placement_ghost(const String &template_name) const
 
 Dictionary GameWorld::prepare_initial_preview()
 {
-	return prepare_initial_models(false);
+	return prepare_initial_models(InitialModelPhase::PlacementPreview);
 }
 
 Dictionary GameWorld::prepare_initial_construction()
 {
-	return prepare_initial_models(true);
+	return prepare_initial_models(InitialModelPhase::ActiveConstruction);
 }
 
-Dictionary GameWorld::prepare_initial_models(bool construction)
+Dictionary GameWorld::prepare_completed_construction()
 {
+	return prepare_initial_models(InitialModelPhase::CompletedConstruction);
+}
+
+Dictionary GameWorld::prepare_initial_models(InitialModelPhase phase)
+{
+	const bool construction = phase != InitialModelPhase::PlacementPreview;
+	const bool completed = phase == InitialModelPhase::CompletedConstruction;
 	Dictionary out;
 	Array errors;
 	out["ok"] = false;
 	out["errors"] = errors;
 	if (!m_game || !m_world || m_autoAdvance)
 	{
-		errors.push_back(construction ? "prepare_initial_construction requires a loaded, non-advancing game" : "prepare_initial_preview requires a loaded, non-advancing game");
+		errors.push_back(completed ? "prepare_completed_construction requires a loaded, non-advancing game" : construction ? "prepare_initial_construction requires a loaded, non-advancing game" : "prepare_initial_preview requires a loaded, non-advancing game");
 		return out;
 	}
 	const auto context = m_world->enterContext();
@@ -3164,16 +3172,21 @@ Dictionary GameWorld::prepare_initial_models(bool construction)
 			if (construction)
 			{
 				// Resource preparation only. These flags were observed on the first
-				// active construction frame; select through the existing RW 0x4B4379
-				// port, without instantiating an Object or running animation scripts.
+				// active construction frame and its completion transition. Select
+				// through the existing RW 0x4B4379 port, without instantiating an
+				// Object, completing construction or running animation scripts.
 				ModelConditionFlags flags;
 				auto flag = [&](const char *name) {
 					const int bit = ModelCondition::indexOf(name);
 					if (bit < 0) errors.push_back(String("construction: unknown model condition ") + name);
 					else flags.set((size_t)bit, true);
 				};
-				flag("PARTIALLY_CONSTRUCTED");
-				flag("ACTIVELY_BEING_CONSTRUCTED");
+				if (completed) flag("CONSTRUCTION_COMPLETE");
+				else
+				{
+					flag("PARTIALLY_CONSTRUCTED");
+					flag("ACTIVELY_BEING_CONSTRUCTED");
+				}
 				// Match ClientEventRecorder::objectCreated's client-only map flags.
 				const GameLogicSettings &settings = m_game->logic().settings();
 				if (settings.forceModelsToFollowTimeOfDay && settings.night) flag("NIGHT");
@@ -3234,7 +3247,7 @@ Dictionary GameWorld::prepare_initial_models(bool construction)
 			}
 			if (!errors.is_empty()) return out;
 			W3DInstancer *inst = memnew(W3DInstancer);
-			inst->set_name(construction ? "PreparedInitialConstruction" : "PreparedPlacementPreview");
+			inst->set_name(completed ? "PreparedCompletedConstruction" : construction ? "PreparedInitialConstruction" : "PreparedPlacementPreview");
 			inst->set_visible(false);
 			add_child(inst); // clear_scene owns it even when preparation fails
 			const Dictionary setup = inst->setup(m_fs);
