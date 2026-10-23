@@ -3,6 +3,7 @@
 #include "GodotDevice/GodotW3DMaterial.h"
 #include "Common/BfmeGame.h"
 #include "GodotDevice/GodotPackedTexture.h"
+#include "GodotDevice/GodotMetalCapabilities.h"
 #include "Libraries/Source/Apt/AptLoad.h"
 
 #include <cstdio>
@@ -16,6 +17,7 @@
 
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
+#include <godot_cpp/classes/rendering_device.hpp>
 #include <godot_cpp/variant/basis.hpp>
 #include <godot_cpp/variant/vector3.hpp>
 #include <godot_cpp/variant/color.hpp>
@@ -60,10 +62,46 @@ String toGodot(const std::string &s)
 	return String::utf8(s.c_str(), (int64_t)s.size());
 }
 
+struct SamplerSelection
+{
+	W3DSamplerPolicy policy = W3DSamplerPolicy::Anisotropic;
+	diagnostics::MetalSamplerCapabilities capabilities;
+	bool metal = false;
+	bool debugDisabled = false;
+};
+
+const SamplerSelection &samplerSelection()
+{
+	// The renderer and Godot's argument-buffer override are startup choices.
+	// Cache only feature values, never ownership of the borrowed native device.
+	static const SamplerSelection selected = [] {
+		SamplerSelection out;
+		RenderingServer *rs = RenderingServer::get_singleton();
+		out.metal = rs->get_current_rendering_driver_name() == "metal";
+		if (!out.metal) return out;
+		out.policy = W3DSamplerPolicy::Metal16;
+		const char *disabled = std::getenv("GODOT_MTL_DISABLE_ARGUMENT_BUFFERS");
+		out.debugDisabled = disabled && std::strcmp(disabled, "1") == 0;
+		RenderingDevice *rd = rs->get_rendering_device();
+		if (rd)
+		{
+			out.capabilities = diagnostics::metalSamplerCapabilities(
+				rd->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_LOGICAL_DEVICE, RID(), 0));
+		}
+		// Donor facts: Godot4.7.2 metal_device_properties.h/.cpp enables direct
+		// argument buffers for Metal3-family devices with tier2, unless disabled.
+		// Cold-cache W3D shader controls qualify anisotropic-repeat on that path;
+		// the slot-bound fallback still fails at sampler17, so retains Metal16.
+		if (diagnostics::canUseDirectMetalSamplers(out.capabilities, out.debugDisabled))
+			out.policy = W3DSamplerPolicy::Anisotropic;
+		return out;
+	}();
+	return selected;
+}
+
 W3DSamplerPolicy samplerPolicy()
 {
-	return RenderingServer::get_singleton()->get_current_rendering_driver_name() == "metal"
-		? W3DSamplerPolicy::Metal16 : W3DSamplerPolicy::Anisotropic;
+	return samplerSelection().policy;
 }
 
 } // namespace
@@ -128,9 +166,13 @@ void W3D_Ensure_Light_Globals()
 		return;
 	}
 	registered = true;
-	if (samplerPolicy() == W3DSamplerPolicy::Metal16)
+	const SamplerSelection &samplers = samplerSelection();
+	if (samplers.metal)
 	{
-		UtilityFunctions::print("W3D [MAC-10 Metal16 limitation]: repeating mipmapped textures use linear-mipmap filtering instead of anisotropy (Godot 4.7.2 binds anisotropic-repeat at Metal slot 17; limit 15). Clamped textures retain anisotropy; simulation unchanged.");
+		UtilityFunctions::print("W3D [Metal sampler policy]: ",
+			samplers.policy == W3DSamplerPolicy::Anisotropic ? "anisotropic repeat enabled" : "Metal16 compatibility filtering",
+			" (device=", samplers.capabilities.deviceAvailable, ", tier2=", samplers.capabilities.argumentBuffersTier2,
+			", metal3-family=", samplers.capabilities.metal3Family, ", argument-buffers-disabled=", samplers.debugDisabled, "). Simulation unchanged.");
 	}
 	const W3DLightSet v = viewerSet();
 	for (const char *suffix : { "obj", "inf" })

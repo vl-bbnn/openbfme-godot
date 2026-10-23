@@ -566,6 +566,9 @@ add_library(openbfme SHARED
     ${OPENBFME_CAH1_GODOT_SOURCES})
 target_sources(openbfme PRIVATE ${OPENBFME_SIM_SOURCES_GODOT}) # the simulation sources of the extension (listed in the manifest)
 target_link_libraries(openbfme PRIVATE openbfme_core godot-cpp)
+if(APPLE)
+    target_link_libraries(openbfme PRIVATE "-framework Metal" "-framework Foundation")
+endif()
 if(UNIX AND NOT APPLE)
     # The extension links libstdc++ statically; without this its exported locale facet ids collide with the system runtime that Mesa loads into a
     # windowed Godot, and the first stream integer extraction (std::istream >> int) dispatches into the wrong codecvt and crashes (PROD-1 review r1).

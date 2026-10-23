@@ -25,3 +25,12 @@ set(OPENBFME_START_GODOT_SOURCES
     src/GodotDevice/GodotTiming.cpp
     src/GodotDevice/GodotProcessMemory.cpp
 )
+
+# Metal capability reads use the active device through Apple's public API only.
+if(APPLE AND OPENBFME_BUILD_GODOT)
+    enable_language(OBJCXX)
+    set(CMAKE_OBJCXX_STANDARD 17)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+    set(CMAKE_OBJCXX_EXTENSIONS OFF)
+    list(APPEND OPENBFME_START_GODOT_SOURCES src/GodotDevice/GodotMetalCapabilities.mm)
+endif()
