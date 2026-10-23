@@ -2091,6 +2091,9 @@ func _begin_game(message: Dictionary) -> void:
 		if not prepared.simulation_unchanged:
 			_fail("preview preparation changed simulation state")
 			return
+	if OS.get_cmdline_user_args().has("--prepare-construction-pipeline"):
+		if not _prepare_initial_construction_pipeline():
+			return
 	_world.visible = world_was_visible
 	_enter_game(rep)
 	if _online_spectate:
@@ -2194,6 +2197,58 @@ func control_bar_drawn() -> bool:
 ## RW 0x64838D NewLineLogo and TolkienLogo (0, 8) then Overall_Game_Intro (1, 0x30) and writes the preference HasSeenLogoMovies = yes; both only when
 ## GlobalData + 0xAF2 (GameData PlayIntro) is set. Each can be skipped (scripts/movie_player.gd). NOT PORTED (stop S-2341): the two arguments of the
 ## display's movie slot (ZH playLogoMovie: the minimum movie and copyright times; RotWK's meaning not read) and the preference write
+## Optional resource-only preparation of the first builder command's opaque
+## initial construction state. The loaded game stays at the same logic frame.
+func _prepare_initial_construction_pipeline() -> bool:
+	if OS.get_environment("OPENBFME_SHARED_SHADERS") != "1":
+		_fail("construction preparation requires the opt-in shared shader pool")
+		return false
+	_world.set_auto_advance(false)
+	var started := Time.get_ticks_msec()
+	var frame: int = _world.get_frame()
+	var state_hash: int = _world.get_state_hash()
+	var prepared: Dictionary = _world.prepare_initial_construction()
+	if not prepared.get("ok", false):
+		_fail("construction preparation: " + JSON.stringify(prepared))
+		return false
+	var node: Node3D = prepared.node
+	prepared.erase("node")
+	var probe := SubViewport.new()
+	probe.name = "ConstructionPipelineProbe"
+	var area := get_viewport().get_visible_rect().size
+	var scale := 64.0 / maxf(area.x, area.y)
+	probe.size = Vector2i(maxi(1, roundi(area.x * scale)), maxi(1, roundi(area.y * scale)))
+	probe.own_world_3d = true
+	probe.msaa_3d = get_viewport().msaa_3d
+	probe.render_target_update_mode = SubViewport.UPDATE_ONCE
+	add_child(probe)
+	node.reparent(probe)
+	var camera := Camera3D.new()
+	probe.add_child(camera)
+	camera.position = Vector3(200, 180, 200)
+	camera.look_at(Vector3.ZERO)
+	camera.current = true
+	node.visible = true
+	# Forward+ normally has a depth prepass, including this opaque probe.
+	# Exact live/probe pipeline identity remains an experimental acceptance gate.
+	prepared["depth_prepass_enabled"] = ProjectSettings.get_setting("rendering/driver/depth_prepass/enable", true)
+	RenderingServer.force_sync()
+	RenderingServer.force_draw(false, 0.0)
+	RenderingServer.force_sync()
+	prepared["ready_us"] = Time.get_ticks_usec()
+	prepared["total_ms"] = Time.get_ticks_msec() - started
+	prepared["frame_after_draw"] = _world.get_frame()
+	prepared["hash_after_draw"] = _world.get_state_hash()
+	prepared["simulation_unchanged"] = frame == int(prepared.frame_after_draw) and state_hash == int(prepared.hash_after_draw)
+	prepared["video_bytes"] = int(Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED))
+	print("GAME CONSTRUCTION PIPELINE READY ", JSON.stringify(prepared))
+	probe.queue_free()
+	if not prepared.simulation_unchanged:
+		_fail("construction preparation changed simulation state")
+		return false
+	return true
+
+
 func _play_intro_movies() -> void:
 	var play := _intro == "on"
 	if _intro == "auto":

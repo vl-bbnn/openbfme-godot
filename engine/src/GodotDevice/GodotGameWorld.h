@@ -200,6 +200,9 @@ public:
 	// Opt-in device experiment: the first initial builder command's actual placement model,
 	// with no logic objects, orders or RNG. The caller renders it before entering the game.
 	Dictionary prepare_initial_preview();
+	// Same first command in its active initial-construction model state, using
+	// opaque materials, the owner palette and the selected texture swaps.
+	Dictionary prepare_initial_construction();
 
 	// ---- lane PROD-1: production by player command ----
 	// makes an object of `template_name` for the player with index `player` (PlayerList order) at map position (x, y), ground height from the terrain;
@@ -609,6 +612,7 @@ protected:
 
 private:
 	mutable Dictionary m_observedRead; ///< net_observed_unwaiting(): the last net_observed() read where the logic was held
+	Dictionary prepare_initial_models(bool construction);
 	Dictionary load_internal(const LiveGame::Options &lo, const String &map_name, const Dictionary &options, const Callable &progress, bool withTerrain);
 	std::unique_ptr<NewGameStart> m_start;           ///< the prepared new game (LiveGame::Options::start points into it)
 	std::vector<MapCacheEntry> m_mapCache;           ///< maps\\mapcache.ini, read by setup()

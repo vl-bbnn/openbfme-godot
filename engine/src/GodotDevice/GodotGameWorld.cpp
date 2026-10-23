@@ -300,6 +300,7 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("get_template_model", "template_name"), &GameWorld::get_template_model);
 	ClassDB::bind_method(D_METHOD("get_placement_ghost", "template_name"), &GameWorld::get_placement_ghost);
 	ClassDB::bind_method(D_METHOD("prepare_initial_preview"), &GameWorld::prepare_initial_preview);
+	ClassDB::bind_method(D_METHOD("prepare_initial_construction"), &GameWorld::prepare_initial_construction);
 	ClassDB::bind_method(D_METHOD("create_object", "template_name", "player", "x", "y", "angle"), &GameWorld::create_object, DEFVAL(0.0));
 	ClassDB::bind_method(D_METHOD("get_ground_height", "x", "y"), &GameWorld::get_ground_height);
 	ClassDB::bind_method(D_METHOD("queue_unit", "player", "producer", "template_name", "secondary"), &GameWorld::queue_unit, DEFVAL(false));
@@ -3109,13 +3110,23 @@ Dictionary GameWorld::get_placement_ghost(const String &template_name) const
 
 Dictionary GameWorld::prepare_initial_preview()
 {
+	return prepare_initial_models(false);
+}
+
+Dictionary GameWorld::prepare_initial_construction()
+{
+	return prepare_initial_models(true);
+}
+
+Dictionary GameWorld::prepare_initial_models(bool construction)
+{
 	Dictionary out;
 	Array errors;
 	out["ok"] = false;
 	out["errors"] = errors;
 	if (!m_game || !m_world || m_autoAdvance)
 	{
-		errors.push_back("prepare_initial_preview requires a loaded, non-advancing game");
+		errors.push_back(construction ? "prepare_initial_construction requires a loaded, non-advancing game" : "prepare_initial_preview requires a loaded, non-advancing game");
 		return out;
 	}
 	const auto context = m_world->enterContext();
@@ -3142,39 +3153,101 @@ Dictionary GameWorld::prepare_initial_preview()
 				errors.push_back("preview: construction command has no thing template");
 				return out;
 			}
-			const PlacementGhost::Look look = PlacementGhost::lookOf(*tt);
-			const std::vector<std::string> models = PlacementGhost::modelsOf(*tt);
+			struct PreparedModel
+			{
+				std::string name;
+				std::vector<std::pair<std::string, std::string>> textures;
+			};
+			std::vector<PreparedModel> models;
+			PlacementGhost::Look look;
+			Array states;
+			if (construction)
+			{
+				// Resource preparation only. These flags were observed on the first
+				// active construction frame; select through the existing RW 0x4B4379
+				// port, without instantiating an Object or running animation scripts.
+				ModelConditionFlags flags;
+				auto flag = [&](const char *name) {
+					const int bit = ModelCondition::indexOf(name);
+					if (bit < 0) errors.push_back(String("construction: unknown model condition ") + name);
+					else flags.set((size_t)bit, true);
+				};
+				flag("PARTIALLY_CONSTRUCTED");
+				flag("ACTIVELY_BEING_CONSTRUCTED");
+				// Match ClientEventRecorder::objectCreated's client-only map flags.
+				const GameLogicSettings &settings = m_game->logic().settings();
+				if (settings.forceModelsToFollowTimeOfDay && settings.night) flag("NIGHT");
+				if (settings.forceModelsToFollowWeather && settings.snowy) flag("SNOW");
+				if (!errors.is_empty()) return out;
+				out["conditions"] = toGodot(ModelCondition::describe(flags));
+				for (const ThingTemplate::Nugget &n : tt->getFinalOverride()->drawModules().nuggets())
+				{
+					const auto *data = dynamic_cast<const W3DModelDrawModuleData *>(n.data.get());
+					if (!data) continue; // floors, particles and other non-model draws are outside this preparation
+					const ModelConditionInfo *info = data->findBestInfo(flags);
+					if (!info)
+					{
+						errors.push_back(toGodot("construction: no model state for " + tt->getName() + ":" + n.tag));
+						continue;
+					}
+					Dictionary state;
+					state["module"] = toGodot(n.tag);
+					state["model"] = toGodot(info->modelName());
+					state["conditions"] = toGodot(ModelCondition::describe(info->conditions));
+					states.push_back(state);
+					// W3DScriptedModelDraw::applyModelState reads modelName(), not
+					// every ExtraMesh alternative. None intentionally draws nothing.
+					if (info->modelName().empty() || AsciiStringUtil::compareNoCase(info->modelName(), "None") == 0) continue;
+					models.push_back({ info->modelName(), info->textures });
+				}
+				out["states"] = states;
+			}
+			else
+			{
+				look = PlacementGhost::lookOf(*tt);
+				for (const std::string &name : PlacementGhost::modelsOf(*tt)) models.push_back({ name, {} });
+			}
 			if (models.empty())
 			{
-				errors.push_back(toGodot("preview: no placement model for " + tt->getName()));
+				errors.push_back(toGodot((construction ? "construction: no model for " : "preview: no placement model for ") + tt->getName()));
 				return out;
 			}
+			if (!errors.is_empty()) return out;
 			W3DInstancer *inst = memnew(W3DInstancer);
-			inst->set_name("PreparedPlacementPreview");
+			inst->set_name(construction ? "PreparedInitialConstruction" : "PreparedPlacementPreview");
 			inst->set_visible(false);
 			add_child(inst); // clear_scene owns it even when preparation fails
 			const Dictionary setup = inst->setup(m_fs);
 			const Array setupErrors = setup.get("errors", Array());
 			for (int64_t i = 0; i < setupErrors.size(); ++i) errors.push_back(setupErrors[i]);
-			inst->set_house_colors_enabled(true);
-			inst->set_alpha_override(true);
+			inst->set_house_colors_enabled(construction ? m_houseColors : true);
+			inst->set_alpha_override(!construction);
 			inst->set_auto_update(false);
 			inst->set_playing(false);
 			Array preparedModels;
-			for (const std::string &name : models)
+			// Match refresh_views/ClientEventRecorder for an ordinary new building:
+			// the local player's baked palette, never a synthetic hero colour set.
+			const auto palette = Render_House_Color_Params(construction && m_houseColors && local->hasTeamColor() ? local->getPlayerColor() : 0u, 0, nullptr);
+			PackedInt64Array colors;
+			for (int i = 0; i < 3; ++i) colors.push_back((int64_t)palette.colors[i]);
+			for (const PreparedModel &modelSpec : models)
 			{
-				const int64_t model = inst->add_model(toGodot(name));
+				inst->Set_Build_Texture_Swaps(modelSpec.textures);
+				const int64_t model = palette.kind > 0
+					? inst->add_model_colored(toGodot(modelSpec.name), palette.kind, colors)
+					: inst->add_model(toGodot(modelSpec.name));
 				const int64_t instance = model < 0 ? -1 : inst->add_instance(model, Transform3D(), String(), 0.0, 0.0);
-				if (instance < 0) errors.push_back(toGodot("preview: model could not be instanced: " + name));
-				else inst->set_instance_opacity(instance, 0.45); // existing placement opacity; presentation only
-				preparedModels.push_back(toGodot(name));
+				if (instance < 0) errors.push_back(toGodot((construction ? "construction: model could not be instanced: " : "preview: model could not be instanced: ") + modelSpec.name));
+				else if (!construction) inst->set_instance_opacity(instance, 0.45); // existing placement opacity
+				preparedModels.push_back(toGodot(modelSpec.name));
 			}
 			inst->update_now();
 			for (const String &e : inst->get_errors()) errors.push_back(e);
 			out["node"] = inst;
 			out["template"] = toGodot(tt->getName());
-			out["model"] = toGodot(look.model);
+			out["model"] = toGodot(construction ? models.front().name : look.model);
 			out["models"] = preparedModels;
+			if (construction) out["house_color_kind"] = palette.kind;
 			out["frame_after"] = get_frame();
 			out["hash_after"] = get_state_hash();
 			if (get_frame() != frame || get_state_hash() != hash) errors.push_back("preview preparation changed simulation state");
