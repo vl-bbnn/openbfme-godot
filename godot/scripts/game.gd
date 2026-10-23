@@ -358,6 +358,7 @@ var _widescreen_flag := ""
 var _play1 := PackedStringArray()
 var _zoom1 := PackedStringArray() # lane ZOOM-1
 var _play_script := "res://scripts/play1_player.gd" # lane SPELL-3: --spell3 runs its scenarios through scripts/spell3_player.gd (PLAY-1's input helpers)
+var _play_script_resource: GDScript
 var _uber1 := 0 # lane UBER-1: --uber1=<troops>
 var _hud5 := PackedStringArray() # lane HUD-5
 var _rules_shot := 0 # lane RULES-1: --rules-shot=<factor>
@@ -1075,6 +1076,14 @@ func _ready() -> void:
 		return
 	if _res != Vector2i(0, 0):
 		get_window().size = _res
+	# Compile the requested test driver before a match is measured. Loading it after
+	# _run_auto's 30-frame wait otherwise adds the driver's parse time to a live frame.
+	# Keep the resource, but instantiate the player only at its original run site.
+	if not _play1.is_empty():
+		_play_script_resource = load(_play_script)
+		if _play_script_resource == null or not _play_script_resource.can_instantiate():
+			_fail("%s does not load" % _play_script)
+			return
 	RenderingServer.set_default_clear_color(Color(0, 0, 0))
 	_build_stage()
 	await get_tree().process_frame
@@ -2898,7 +2907,7 @@ func _run_campaign_play1() -> void:
 	while Time.get_ticks_msec() - t0 < int(wait * 1000.0):
 		await get_tree().process_frame
 	print("GAME campaign play1: %s, logic frame %d, %d objects" % [_cli_campaign, _world.get_frame(), _world.get_object_count()])
-	var script: GDScript = load(_play_script) # lane OWNERFIX-1 / DEVPORT-7: --ownerfix1 / --devport7 play their campaign scenarios too
+	var script: GDScript = _play_script_resource # lane OWNERFIX-1 / DEVPORT-7: --ownerfix1 / --devport7 play their campaign scenarios too
 	if script == null or not script.can_instantiate():
 		_fail("%s does not load" % _play_script)
 		return
@@ -3028,7 +3037,7 @@ func _run_auto() -> void:
 		get_tree().quit(0 if uplayer.fail_count == 0 else 1)
 		return
 	if not _play1.is_empty():
-		var script: GDScript = load(_play_script)
+		var script: GDScript = _play_script_resource
 		if script == null or not script.can_instantiate():
 			_fail("%s does not load" % _play_script)
 			return
