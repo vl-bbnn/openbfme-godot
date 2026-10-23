@@ -623,7 +623,12 @@ func _scripted_run() -> bool:
 	return false
 
 
-const INTRO_QUIET_ARGS := ["--fps", "--dev-overlay", "--intro", "--alternate-mouse", "--free-camera"] # options that are not automation
+# Presentation preparation alone keeps an interactive launch's intro policy.
+const INTRO_QUIET_ARGS := [
+	"--fps", "--dev-overlay", "--intro", "--alternate-mouse", "--free-camera",
+	"--prepare-preview-pipeline", "--prepare-construction-pipeline", "--prepare-construction-fx-pipeline",
+	"--prepare-completed-construction-pipeline", "--prepare-globe-pipeline",
+] # options that are not automation
 var _dev_overlay := false       # lane CAMP-2: --dev-overlay (developer text on screen; never in the real game)
 var _control_bar_hidden := false # lane CAMP-2: HideControlBar / ShowControlBar (RW 0x804576 / 0x8046A1) of the script's letterbox and HIDE_UI / SHOW_UI
 var _qa := false                # lane QA-1
