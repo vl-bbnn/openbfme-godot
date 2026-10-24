@@ -16,6 +16,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 namespace godot
 {
@@ -35,6 +37,17 @@ void fragment() {
 	COLOR = vec4(clamp(a + d * m, vec3(0.0), vec3(1.0)), 1.0);
 }
 )";
+
+// Presentation-only, opt-in memory budget. Keep the scene, its clocks and all
+// stateful W3D mapper updates alive; only unused offscreen attachments shrink.
+bool releaseInactiveTargetsEnabled()
+{
+	static const bool enabled = [] {
+		const char *value = std::getenv("OPENBFME_RELEASE_INACTIVE_UI_TARGETS");
+		return value && std::strcmp(value, "1") == 0;
+	}();
+	return enabled;
+}
 
 std::string varOf(const AptCanvasOp &op, const char *name, bool *has = nullptr)
 {
@@ -280,6 +293,19 @@ void AptView3DViewers::endBuild()
 		const SubViewport::UpdateMode mode = slot.used && !slot.failed ? SubViewport::UPDATE_ALWAYS : SubViewport::UPDATE_DISABLED;
 		slot.black->set_update_mode(mode);
 		slot.white->set_update_mode(mode);
+		if (mode == SubViewport::UPDATE_DISABLED && releaseInactiveTargetsEnabled())
+		{
+			// draw() restores the clip's requested size before posing and enabling
+			// both views. The shared world, cameras and W3D instancer remain intact.
+			for (SubViewport *view : { slot.black, slot.white })
+			{
+				const Vector2i size = view->get_size();
+				if (size.x > 4 || size.y > 4)
+				{
+					view->set_size(Vector2i(4, 4));
+				}
+			}
+		}
 	}
 }
 
