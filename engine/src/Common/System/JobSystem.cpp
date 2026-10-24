@@ -26,9 +26,17 @@ struct RunningScope
 std::string environmentError(const std::string &pool, const char *when, std::size_t chunk)
 {
 	char b[96];
+#if defined(__APPLE__) && defined(__aarch64__)
+	std::uint64_t fpcr = 0;
+	__asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr));
+	std::snprintf(b, sizeof(b), "FPCR 0x%08llX", static_cast<unsigned long long>(fpcr));
+	return "JobSystem '" + pool + "': chunk " + std::to_string(chunk) + " " + when + " the canonical floating-point environment (" + b +
+		", expected FPCR & 0x01C09F00 == 0: nearest rounding, traps disabled, FZ off)";
+#else
 	std::snprintf(b, sizeof(b), "MXCSR 0x%08X, x87 control word 0x%04X", (unsigned)NumericState::readControlRegister(), (unsigned)NumericState::readX87ControlWord());
 	return "JobSystem '" + pool + "': chunk " + std::to_string(chunk) + " " + when + " the canonical floating-point environment (" + b +
 		", expected MXCSR 0x1F80 with the exception flags ignored and x87 0x037F)";
+#endif
 }
 
 // the text of a chunk's own exception, for the environment error that replaces it
