@@ -98,6 +98,14 @@ bool floatingPointEnvironmentIsCanonical()
 #if OPENBFME_HAS_MXCSR
 	// bit 6 DAZ, bits 7..12 exception masks, bits 13..14 rounding control, bit 15 FTZ (the low six bits are sticky exception flags)
 	return (OPENBFME_GETCSR() & 0xFFC0u) == kCanonicalControlRegister && x87ControlWordIsCanonical();
+#elif defined(__APPLE__) && defined(__aarch64__)
+	// Apple SDK fenv.h, ARM64: FPCR rounding bits 22..23, FZ bit 24,
+	// and trap-enable bits 8..12/15 must match FE_DFL_ENV. Reading only:
+	// FPSR sticky flags and unrelated FPCR controls are not changed here.
+	std::uint64_t fpcr = 0;
+	__asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr));
+	constexpr std::uint64_t canonicalMask = 0x01C09F00ull;
+	return (fpcr & canonicalMask) == 0;
 #else
 	return std::fegetround() == FE_TONEAREST && x87ControlWordIsCanonical();
 #endif

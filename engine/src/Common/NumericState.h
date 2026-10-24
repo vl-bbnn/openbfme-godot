@@ -66,7 +66,7 @@ constexpr std::uint32_t kCanonicalControlRegister = 0x1F80u;
 // entry and at the outermost GameLogic::update; any code that changes the environment (a graphics driver, a plug-in, a test) is undone by it.
 void normalizeFloatingPointEnvironment();
 // true when the calling thread's environment is the canonical one (MXCSR & 0xFFC0 == kCanonicalControlRegister and the x87 control word canonical on
-// x86; nearest rounding elsewhere)
+// x86; on Apple ARM64 nearest rounding, traps disabled and FZ off; nearest rounding elsewhere)
 bool floatingPointEnvironmentIsCanonical();
 // the calling thread's MXCSR (x86 / x64; 0 on other targets) and a way to set it: test hooks for the environment normalisation
 std::uint32_t readControlRegister();
