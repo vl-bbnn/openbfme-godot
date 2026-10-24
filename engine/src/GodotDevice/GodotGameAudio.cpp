@@ -445,6 +445,7 @@ void GameAudio::_bind_methods()
 	ClassDB::bind_method(D_METHOD("play_music", "event_name"), &GameAudio::play_music);
 	ClassDB::bind_method(D_METHOD("stop_music", "fade"), &GameAudio::stop_music);
 	ClassDB::bind_method(D_METHOD("remove_event", "handle"), &GameAudio::remove_event);
+	ClassDB::bind_method(D_METHOD("stop_owned_event", "handle"), &GameAudio::stop_owned_event);
 	ClassDB::bind_method(D_METHOD("kill_event", "handle"), &GameAudio::kill_event);
 	ClassDB::bind_method(D_METHOD("is_playing", "handle"), &GameAudio::is_playing);
 	ClassDB::bind_method(D_METHOD("is_valid_event", "event_name"), &GameAudio::is_valid_event);
@@ -746,6 +747,23 @@ void GameAudio::remove_event(int64_t h)
 		return;
 	}
 	m_manager->removeAudioEvent((AudioHandle)h);
+}
+
+void GameAudio::stop_owned_event(int64_t h)
+{
+	REQUIRE_BOOTED()
+	// Presentation owners hold allocated event handles, not legacy commands.
+	// S-240: the first allocated handle aliases StopTheMusicFade. Bypass only
+	// that command dispatch; normal stopAudioEvent fade/decay rules still apply.
+	if (isShellAudioHandle(h))
+	{
+		if (m_shellAudio && m_shellAudio->m_manager)
+		{
+			m_shellAudio->m_manager->stopOwnedAudioEvent(untagShellAudioHandle(h));
+		}
+		return;
+	}
+	m_manager->stopOwnedAudioEvent((AudioHandle)h);
 }
 
 void GameAudio::kill_event(int64_t h)

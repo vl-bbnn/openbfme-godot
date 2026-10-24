@@ -185,6 +185,9 @@ public:
 	AudioHandle playSoundForPlayer(const std::string &eventName, int owningPlayerIndex);
 	// ZH removeAudioEvent: stop (with the Decay portion and the fade the event asks for)
 	void removeAudioEvent(AudioHandle handle);
+	// An allocated handle owned by a client, never a legacy stop-music command.
+	// Preserves normal event fade/Decay and multisound cleanup (S-240 alias).
+	void stopOwnedAudioEvent(AudioHandle handle);
 	// AUDIO-2 (review r2 fix 2): moves a positional event that is pending or playing (a sound placed at a position, not one owned by an object / drawable);
 	// false when no such event exists
 	bool setEventPosition(AudioHandle handle, const Coord3D &position);

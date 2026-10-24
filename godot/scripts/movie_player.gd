@@ -121,7 +121,7 @@ func stop() -> void:
 	if _audio != null:
 		for h in _handles:
 			if int(h) > 0:
-				_audio.remove_event(h)
+				_audio.stop_owned_event(h)
 	_handles.clear()
 	if _layer != null:
 		_layer.queue_free()

@@ -1943,6 +1943,11 @@ void AudioManager::removeAudioEvent(AudioHandle handle)
 	{
 		return;
 	}
+	stopOwnedAudioEvent(handle);
+}
+
+void AudioManager::stopOwnedAudioEvent(AudioHandle handle)
+{
 	stopAudioEvent(handle);
 	auto group = m_multisoundGroups.find(handle);
 	if (group != m_multisoundGroups.end())

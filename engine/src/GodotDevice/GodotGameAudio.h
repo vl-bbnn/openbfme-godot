@@ -134,6 +134,8 @@ public:
 	int64_t play_music(const String &event_name);
 	void stop_music(bool fade);
 	void remove_event(int64_t handle);
+	// Stop a returned, owned event handle without interpreting legacy command tokens.
+	void stop_owned_event(int64_t handle);
 	void kill_event(int64_t handle);
 	bool is_playing(int64_t handle) const;
 	bool is_valid_event(const String &event_name) const;
