@@ -8,6 +8,7 @@ set(OPENBFME_PERF2_SOURCES
 list(APPEND OPENBFME_SIM_SOURCES ${OPENBFME_PERF2_SOURCES})
 set(OPENBFME_PERF2_TESTS
     tests/test_perf2_jobs.cpp
+    tests/test_jobs_arm.cpp
     tests/test_perf2_determinism.cpp
     tests/test_perf2_bench.cpp
     tests/test_perf2_client.cpp

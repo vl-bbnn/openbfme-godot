@@ -767,6 +767,7 @@ add_executable(openbfme_tests
     tests/test_ini_scanners.cpp
     tests/test_ini_macro.cpp
     tests/test_numeric_state.cpp
+    tests/test_numeric_arm.cpp
     tests/test_win32path.cpp
     tests/test_mount_handles.cpp
     tests/test_subsystem_legend.cpp
