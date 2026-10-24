@@ -164,7 +164,8 @@ private:
 	void syncModifiers(const InputEventWithModifiers *event);
 	void keyEvent(int dik, bool down, char32_t character);
 	void syncModal(); ///< lane OPTS-6: a menu became (or stopped being) the input's top: the world's held input is cancelled ///< lane INPUT-1: inject_key with the layout's character ///< lane INPUT-1: Ctrl / Shift / Alt as the event reports them
-	void handleInput(const Ref<InputEvent> &event); ///< SMOOTH-1: _input's work (replayed for input that waited for the logic worker)
+	void handleInput(const Ref<InputEvent> &event, unsigned timeMs);
+	void mouseButtonAtTime(int button, bool down, const Vector2 &p, bool double_click, unsigned timeMs); ///< SMOOTH-1: _input's work (replayed for input that waited for the logic worker)
 	std::unique_ptr<HudDevice> d;
 };
 

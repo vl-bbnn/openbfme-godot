@@ -201,7 +201,12 @@ struct HudDevice : public AptNativeHook
 	bool livePointerSeen = false;
 	Vector2 livePointer; ///< lane BUILD-5 r3: the pointer as the OS reports it, also while the HUD's input waits for the logic worker (the ghost's pose: RotWK Mouse + 0x4F0C)
 	int localPlayerIndex = -1;                   ///< SMOOTH-1: the local player's index (the radar's own blips, from the snapshot)
-	std::vector<Ref<InputEvent>> pendingInput;   ///< SMOOTH-1: input that arrived while the logic worker ran a frame, replayed in order when it is idle
+	struct PendingInput
+	{
+		Ref<InputEvent> event;
+		unsigned timeMs;
+	};
+	std::vector<PendingInput> pendingInput;   ///< SMOOTH-1: input that arrived while the logic worker ran a frame, replayed in order when it is idle
 	unsigned long long deferredInput = 0;
 	unsigned long long droppedInput = 0, focusResets = 0; ///< lane BACKLOG3: queued presses dropped at a focus loss, the focus losses
 	bool holdInput = false;                               ///< lane BACKLOG3 (QA): hold_input
@@ -2941,11 +2946,11 @@ void InGameHudNode::_process(double delta)
 	syncModal(); // lane OPTS-6: before the queued input is replayed and before the camera's frame
 	if (!d->holdInput && !d->pendingInput.empty() && d->world && d->world->hud_game() && d->world->hud_game()->logicHeld())
 	{
-		std::vector<Ref<InputEvent>> events;
+		std::vector<HudDevice::PendingInput> events;
 		events.swap(d->pendingInput);
-		for (const Ref<InputEvent> &e : events)
+		for (const HudDevice::PendingInput &e : events)
 		{
-			handleInput(e); // the input that waited for the worker, in arrival order
+			handleInput(e.event, e.timeMs); // the input that waited for the worker, in arrival order
 		}
 	}
 	// lane INPUT-1: TAKE_SCREENSHOT (F12). RotWK's W3DDisplay::takeScreenShot (RW 0x4474A0) writes sshot%.4d.bmp into the user data folder, the first number
@@ -3352,6 +3357,11 @@ void InGameHudNode::inject_mouse_move(const Vector2 &p)
 void InGameHudNode::inject_mouse_button(int button, bool down, const Vector2 &p, bool double_click)
 {
 	waitLogic(d.get());
+	mouseButtonAtTime(button, down, p, double_click, (unsigned)Time::get_singleton()->get_ticks_msec());
+}
+
+void InGameHudNode::mouseButtonAtTime(int button, bool down, const Vector2 &p, bool double_click, unsigned timeMs)
+{
 	if (!d->ready)
 	{
 		return;
@@ -3362,7 +3372,7 @@ void InGameHudNode::inject_mouse_button(int button, bool down, const Vector2 &p,
 	{
 		d->heldButtons = down ? (d->heldButtons | (1u << button)) : (d->heldButtons & ~(1u << button)); // lane OPTS-6
 	}
-	d->hud->mouseButton(b, down, (int)p.x, (int)p.y, d->keyState, (int)Time::get_singleton()->get_ticks_msec(), double_click);
+	d->hud->mouseButton(b, down, (int)p.x, (int)p.y, d->keyState, (int)timeMs, double_click);
 }
 
 void InGameHudNode::syncModal()
@@ -3444,11 +3454,11 @@ void InGameHudNode::_notification(int what)
 {
 	if ((what == NOTIFICATION_WM_WINDOW_FOCUS_OUT || what == NOTIFICATION_APPLICATION_FOCUS_OUT) && d && d->ready && d->hud)
 	{
-		std::vector<Ref<InputEvent>> kept;
-		for (const Ref<InputEvent> &e : d->pendingInput)
+		std::vector<HudDevice::PendingInput> kept;
+		for (const HudDevice::PendingInput &e : d->pendingInput)
 		{
-			const InputEventKey *k = Object::cast_to<InputEventKey>(e.ptr());
-			const InputEventMouseButton *b = Object::cast_to<InputEventMouseButton>(e.ptr());
+			const InputEventKey *k = Object::cast_to<InputEventKey>(e.event.ptr());
+			const InputEventMouseButton *b = Object::cast_to<InputEventMouseButton>(e.event.ptr());
 			if ((k && k->is_pressed()) || (b && b->is_pressed()))
 			{
 				++d->droppedInput;
@@ -3507,22 +3517,26 @@ void InGameHudNode::_input(const Ref<InputEvent> &event)
 		d->livePointerSeen = true;
 		d->livePointer = m->get_position(); // lane BUILD-5 r3: presentation only (the placement ghost's pose); the event itself may still wait
 	}
+	// Preserve the Godot arrival interval across a busy logic worker. Replaying
+	// down/up with the drain time would turn a long right drag into a click
+	// (MouseSettings::isRightClick; PlaceEventTranslator RW 0x83E66C).
+	const unsigned timeMs = (unsigned)Time::get_singleton()->get_ticks_msec();
 	LiveGame *game = d->world ? d->world->hud_game() : nullptr;
 	if (d->holdInput || (game && (!game->logicHeld() || !d->pendingInput.empty())))
 	{
-		d->pendingInput.push_back(event);
+		d->pendingInput.push_back({ event, timeMs });
 		++d->deferredInput;
 		return;
 	}
-	handleInput(event);
+	handleInput(event, timeMs);
 }
 
-void InGameHudNode::handleInput(const Ref<InputEvent> &event)
+void InGameHudNode::handleInput(const Ref<InputEvent> &event, unsigned timeMs)
 {
 	syncModal(); // lane OPTS-6
 	if (LookAtTranslator *la = d->hud->input().lookAt())
 	{
-		la->setTime((unsigned)Time::get_singleton()->get_ticks_msec());
+		la->setTime(timeMs);
 	}
 	if (Object::cast_to<InputEventMouse>(event.ptr()) && d->player && !d->ownsPlayer)
 	{
@@ -3539,7 +3553,8 @@ void InGameHudNode::handleInput(const Ref<InputEvent> &event)
 		const int idx = (int)mb->get_button_index();
 		if (idx == 1 || idx == 2 || idx == 3)
 		{
-			inject_mouse_button(idx, mb->is_pressed(), mb->get_position(), mb->is_double_click());
+			waitLogic(d.get());
+			mouseButtonAtTime(idx, mb->is_pressed(), mb->get_position(), mb->is_double_click(), timeMs);
 		}
 		else if ((idx == 4 || idx == 5) && mb->is_pressed())
 		{
