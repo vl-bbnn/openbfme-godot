@@ -73,6 +73,7 @@ bool TextFile::parseBytes(const std::string &fileName, const std::vector<std::ui
 bool TextFile::findIncludeOperand(const std::string &raw, size_t limit, std::string &operand)
 {
 	std::string scratch;
+	scratch.reserve(std::min(raw.size(), limit) + 1);
 	for (size_t i = 0; i < raw.size() && i + 1 < limit; ++i)
 	{
 		const char ch = raw[i];
@@ -84,12 +85,12 @@ bool TextFile::findIncludeOperand(const std::string &raw, size_t limit, std::str
 	}
 	scratch.push_back('\0');
 
-	const size_t at = std::string(scratch.c_str()).find("#include");
-	if (at == std::string::npos)
+	const char *include = std::strstr(scratch.c_str(), "#include");
+	if (include == nullptr)
 	{
 		return false;
 	}
-	size_t p = at + std::strlen("#include");
+	size_t p = (size_t)(include - scratch.c_str()) + std::strlen("#include");
 	while (scratch[p] == ' ' || scratch[p] == '\t' || scratch[p] == '"')
 	{
 		++p;
@@ -260,11 +261,7 @@ bool TextFile::parseBuffer(const std::string &fileName, const std::vector<std::u
 		}
 
 		const size_t limit = std::min<size_t>(kIncludeScratchBytes, n - startNext);
-		std::string raw;
-		for (size_t i = (size_t)ptr; i < n + 1 && raw.size() < limit; ++i)
-		{
-			raw.push_back(buf[i]);
-		}
+		const std::string raw(&buf[(size_t)ptr], std::min(limit, n + 1 - (size_t)ptr));
 		std::string operand;
 		if (findIncludeOperand(raw, limit, operand))
 		{
