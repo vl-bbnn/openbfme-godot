@@ -2477,7 +2477,8 @@ func _tour_expansion(base: Vector2) -> String:
 			return "the pad %s offers no expansion it can build in 90 s (%s)" % [pad.template, button_list()]
 		var before: Array = own_objects().map(func(x): return x.id)
 		var n: int = hud.get_message_log().size()
-		await click(palantir_button(e.frame))
+		if not await _press_command_button(e):
+			return "the pad expansion button %s could not be pressed" % e.name
 		await game._step(6)
 		if hud.get_placement().get("placing", false):
 			await click(to_pixel(pad.x, pad.y))
