@@ -2106,16 +2106,21 @@ func open_page(key: String) -> bool:
 	var b := command_button(func(x): return x.command == "PUSH_VISIBLE_COMMAND_RANGE" and str(x.name).contains(key) and int(x.state) == 1)
 	if b.is_empty():
 		return false
-	# The page can be in the side bar; use the same live button presentation as QA commands.
+	var pressed: bool = await _press_command_button(b)
+	if not pressed:
+		return false
+	await game._step(6)
+	return true
+
+
+## Press a command through its current radial or Apt presentation, with the same hit verification as QA.
+func _press_command_button(b: Dictionary) -> bool:
 	var helper: Node = load("res://scripts/qa_player.gd").new()
 	game.add_child(helper)
 	helper.setup(game, world, hud, game._local_name, {})
 	var pressed: bool = await helper._press(b)
 	helper.queue_free()
-	if not pressed:
-		return false
-	await game._step(6)
-	return true
+	return pressed
 
 
 func is_garrison_template(t: String) -> bool:
@@ -2244,7 +2249,8 @@ func _tour_one_hero(fort: Dictionary, skip: int) -> String:
 	if b.is_empty():
 		return "the fortress offers no hero to recruit (%s)" % button_list()
 	var before: Array = own_objects().map(func(x): return x.id)
-	await click(palantir_button(b.frame))
+	if not await _press_command_button(b):
+		return "the fortress hero button %s could not be pressed" % b.name
 	await game._step(4)
 	var hero: Dictionary = {}
 	for i in 240:
