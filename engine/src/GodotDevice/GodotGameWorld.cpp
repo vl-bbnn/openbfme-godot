@@ -42,6 +42,7 @@
 #include "GameLogic/Combat/ObjectWeapons.h"
 #include "GameLogic/WeaponState.h"
 #include "GameLogic/Module/ProjectileModules.h"
+#include "GameLogic/Module/ActiveBody.h"
 #include "GameLogic/VictoryConditions.h"
 #include "Common/PlayerList.h"
 #include "Common/Science.h"
@@ -280,6 +281,7 @@ void GameWorld::_bind_methods()
 	ClassDB::bind_method(D_METHOD("set_shroud_drawn", "on"), &GameWorld::set_shroud_drawn);
 	ClassDB::bind_method(D_METHOD("get_shroud_cells"), &GameWorld::get_shroud_cells);
 	ClassDB::bind_method(D_METHOD("get_projectiles"), &GameWorld::get_projectiles);
+	ClassDB::bind_method(D_METHOD("get_damage_record", "id"), &GameWorld::get_damage_record);
 	ClassDB::bind_method(D_METHOD("get_victory_report"), &GameWorld::get_victory_report);
 	ClassDB::bind_method(D_METHOD("start_victory_rules", "players"), &GameWorld::start_victory_rules, DEFVAL(PackedStringArray()));
 	ClassDB::bind_method(D_METHOD("get_end_game_state"), &GameWorld::get_end_game_state); // lane END-1
@@ -2713,6 +2715,42 @@ Array GameWorld::get_projectiles() const
 		out.push_back(d);
 	}
 	return out;
+}
+
+Dictionary GameWorld::get_damage_record(int64_t id) const
+{
+	Dictionary d;
+	d["ok"] = false;
+	if (!m_game)
+	{
+		d["reason"] = "no_game";
+		return d;
+	}
+	if (id <= 0 || (int64_t)(::ObjectID)id != id)
+	{
+		d["reason"] = "invalid_id";
+		return d;
+	}
+	const ::Object *o = m_game->logic().findObjectByID((::ObjectID)id);
+	if (!o)
+	{
+		d["reason"] = "object_missing";
+		return d;
+	}
+	const ActiveBody *body = dynamic_cast<const ActiveBody *>(o->getBodyModule());
+	if (!body)
+	{
+		d["reason"] = "body_without_record";
+		return d;
+	}
+	// ActiveBody's existing non-consuming getters (ActiveBody.h): the latest
+	// damaging hit only, not an event log. 0xFFFFFFFF is its never-hit frame.
+	d["ok"] = true;
+	d["id"] = id;
+	d["has_record"] = body->lastDamageFrame() != 0xFFFFFFFFu;
+	d["frame"] = (int64_t)body->lastDamageFrame();
+	d["source_id"] = (int64_t)body->lastDamager();
+	return d;
 }
 
 Dictionary GameWorld::get_object(int64_t id) const

@@ -155,6 +155,8 @@ public:
 	// lane PROJ-1: the projectile objects in flight (KindOf PROJECTILE with a BezierProjectileBehavior): id, template, position, the position of the previous logic frame, the unit
 	// X axis of the basis, the flight step / segment count and whether it has landed. The client draws them (the streak draw module is not ported: stop S-365).
 	Array get_projectiles() const;
+	// Explicit diagnostics of ActiveBody's latest damage source/frame; unsupported or gone bodies are named.
+	Dictionary get_damage_record(int64_t id) const;
 	Dictionary get_victory_report() const;
 	void start_victory_rules(const PackedStringArray &players = PackedStringArray());
 	// lane END-1: the end of the game (GameClient/EndGame.h). The end sequence runs on every presented logic frame (the human player's win / loss scripts, the
