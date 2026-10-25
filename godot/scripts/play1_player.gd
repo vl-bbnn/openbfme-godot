@@ -558,8 +558,14 @@ func press(p: Vector2, button: MouseButton, down: bool) -> void:
 	_vp().push_input(b)
 
 
-func click(p: Vector2, button: MouseButton = MOUSE_BUTTON_LEFT) -> void:
+func click(p: Vector2, button: MouseButton = MOUSE_BUTTON_LEFT, selection_target: int = 0) -> void:
 	await move_to(p)
+	# A selection probe may overlap a native command bubble or another object.
+	# Judge the actual hovered point before a selection click can buy or order.
+	if selection_target != 0:
+		var pick: Dictionary = hud.pick_probe(p, selection_target)
+		if hud.get_state().get("over_gui", true) or not pick.get("ok", false) or int(pick.get("picked", 0)) == 0 or int(pick.get("picked", 0)) != int(pick.get("target_representative", 0)):
+			return
 	# a click is shorter than Mouse.ini's DragToleranceMS (150): one rendered frame between the press and the release (a slow windowed frame on the
 	# Deck takes 60+ ms; three of them made the release a drag's)
 	var t0 := Time.get_ticks_msec()
@@ -2615,7 +2621,7 @@ func select_object(o: Dictionary) -> bool:
 		var px := to_pixel(at.x + offset.x, at.y + offset.y)
 		if not on_screen(px):
 			continue
-		await click(px)
+		await click(px, MOUSE_BUTTON_LEFT, target_id)
 		await game._step(6)
 		if hud.get_selection().has(o.id):
 			return true
@@ -2626,6 +2632,8 @@ func select_object(o: Dictionary) -> bool:
 			var lo := c - Vector2(28, 28)
 			var hi := c + Vector2(28, 28)
 			await move_to(lo)
+			if hud.get_state().get("over_gui", true):
+				return false
 			press(lo, MOUSE_BUTTON_LEFT, true)
 			for t in 6:
 				await move_to(lo.lerp(hi, float(t + 1) / 6.0))
