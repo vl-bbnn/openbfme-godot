@@ -173,6 +173,28 @@ idea (section 4).
   state at frame F, comparing the players' CRCs on the way. Measured: 10, 30
   and 60 minute games catch up in 9, 48 and 106 s on the reference PC.
 
+### Native Object snapshot version 2: active horde formations
+
+`Object::xfer` version 2 records the source template of a swapped `HordeContain`
+before reading the module blocks. Loading recreates that contain from the
+mounted template data, then transfers its saved state without running a
+formation command, creating members or drawing slot RNG. The source must be
+reachable through the original active contain's `AlternateFormation` chain.
+The original configuration uses an empty source name. Construction's last
+contain wins; each formation target uses its first HordeContain, matching the
+existing command. Returning to the object's template therefore needs an explicit
+source when that first contain differs from the original last one. A swapped
+configuration contributes its source name to the native state hash; unchanged
+original configurations retain their hash stream.
+
+Version 1 did not record this identity: it could restore alternate member
+conditions with the primary formation's configuration and still match the
+hash. It cannot safely migrate that missing field, so this class now accepts
+only version 2. The original file remains intact; use the build that made it
+or the explicit recorded-log load policy in section 5. This changes OpenBFME's
+native snapshot only, and makes no claim about retail save layout or formation
+parity (S-001, S-589, S-4190).
+
 ## 2. The design: one container, three parts
 
 ```

@@ -3,6 +3,11 @@
 // test_hud_combat_retail.cpp) and SKIP when ROTWK_INSTALL / BFME2_INSTALL are unset.
 
 #include "doctest.h"
+#include "Common/XferLoad.h"
+#include "Common/XferSave.h"
+#include "LogicTestUtil.h"
+#include "GameClient/MapHordeSpawn.h"
+#include "GameLogic/Module/LogicModules.h"
 #include "HudTestUtil.h"
 
 #include "Common/PlayerList.h"
@@ -936,4 +941,149 @@ TEST_CASE("backlog8 retail: the FLOATING_Z horde members of the retail data: the
 	}
 	CHECK(hc->passStats().snaps == 0);
 	CHECK(hc->passStats().walks == 0);
+}
+
+// Native snapshot regression: a formation replaces ModuleData while the object keeps its original template.
+TEST_CASE("saveformation retail: Object snapshot preserves formation data for primary, alternate and back")
+{
+    REQUIRE(haveWorld());
+    for (const char *name : {"GondorFighterHorde", "GondorTowerShieldGuardHorde"})
+    {
+        for (int swaps : {0, 1, 2})
+        {
+            INFO("horde=" << std::string(name) << " swaps=" << swaps);
+            std::vector<std::uint8_t> bytes;
+            const ModuleData *savedData = nullptr;
+            std::string nextName;
+            bool porcupine = false;
+            std::uint32_t savedHash = 0;
+            {
+                Arena a(shared(), "FactionMen", "FactionMordor");
+                Object *h = a.place(name, 0, 600.0f, 600.0f, 0.0f);
+                for (int i = 0; i < 20; ++i) a.logic.runLogicFrame();
+                auto *hc = dynamic_cast<HordeContain *>(h->getContain());
+                REQUIRE(hc);
+                for (int i = 0; i < swaps; ++i)
+                {
+                    REQUIRE(hc->canToggleFormation());
+                    hc = hc->toggleFormation();
+                    REQUIRE(hc);
+                    for (int f = 0; f < 5; ++f) a.logic.runLogicFrame();
+                }
+                savedData = hc->getModuleData();
+                nextName = hc->alternateFormationTemplate()->getName();
+                porcupine = hc->hordeData().m_isPorcupineFormation;
+                // AI state belongs to obfme:AIWorld, not this Object-only xfer (S-4193).
+                StateHasher hash; h->crcOmittingModules(hash, [](const BehaviorModule &m) { return const_cast<BehaviorModule &>(m).getAIUpdateInterface() != nullptr; }); savedHash=hash.value();
+                XferSave out; h->xfer(out); bytes=out.data();
+            }
+            {
+                Arena b(shared(), "FactionMen", "FactionMordor");
+                Object *h = b.place(name, 0, 600.0f, 600.0f, 0.0f);
+                for (int i = 0; i < 20; ++i) b.logic.runLogicFrame();
+                XferLoad in(bytes); h->xfer(in);
+                CHECK(in.atEnd());
+                auto *hc = dynamic_cast<HordeContain *>(h->getContain());
+                REQUIRE(hc);
+                CHECK(hc->getModuleData() == savedData);
+                CHECK(hc->alternateFormationTemplate()->getName() == nextName);
+                CHECK(hc->hordeData().m_isPorcupineFormation == porcupine);
+                // AI state belongs to obfme:AIWorld, not this Object-only xfer (S-4193).
+                StateHasher hash; h->crcOmittingModules(hash, [](const BehaviorModule &m) { return const_cast<BehaviorModule &>(m).getAIUpdateInterface() != nullptr; }); CHECK(hash.value() == savedHash);
+                XferSave again; h->xfer(again); CHECK(again.data() == bytes);
+            }
+        }
+    }
+}
+
+TEST_CASE("SAVE-FORMATION01 native version and formation source failures are explicit before state mutation")
+{
+    REQUIRE(haveWorld());
+    Arena arena(shared(), "FactionMen", "FactionMordor");
+    Object *h=arena.place("GondorFighterHorde",0,600.0f,600.0f,0.0f);
+    for(int f=0;f<20;++f) arena.logic.runLogicFrame();
+    XferSave saved; h->xfer(saved);
+    REQUIRE(saved.data()[0]==2);
+    auto old=saved.data(); old[0]=1;
+    XferLoad oldReader(old);
+    CHECK_THROWS_WITH_AS(h->xfer(oldReader),"Found version 1 but the earliest supported is 2",XferException);
+    for(const std::string source : {std::string("MissingFormationForSnapshotTest"),std::string("GondorArcherHorde")})
+    {
+        XferLoad header(saved.data());XferVersion v{2,2};header.xferVersion(v);
+        ObjectID id=0;header.xferObjectID(&id);std::string name;header.xferAsciiString(&name);
+        unsigned team=0;header.xferUnsignedInt(&team);std::string original;header.xferAsciiString(&original);
+        REQUIRE(original.empty());
+        XferSave bad;v={2,2};bad.xferVersion(v);bad.xferObjectID(&id);bad.xferAsciiString(&name);bad.xferUnsignedInt(&team);
+        std::string substituted=source;bad.xferAsciiString(&substituted);
+        bad.data().insert(bad.data().end(),saved.data().begin()+header.position(),saved.data().end());
+        XferSave rngBefore;arena.logic.random().xfer(rngBefore);StateHasher before;h->crc(before);
+        XferLoad reader(bad.data());
+        const std::string expected="the snapshot's horde formation '"+source+"' is not reachable from 'GondorFighterHorde'";
+        CHECK_THROWS_WITH_AS(h->xfer(reader),expected.c_str(),XferException);
+        XferSave rngAfter;arena.logic.random().xfer(rngAfter);StateHasher after;h->crc(after);
+        CHECK(rngBefore.data()==rngAfter.data());CHECK(before.value()==after.value());
+    }
+}
+
+TEST_CASE("SAVE-FORMATION01 actual configuration contributes to hash even with identical mutable contain state")
+{
+    REQUIRE(haveWorld());
+    std::vector<std::uint8_t> state,wholeState;std::uint32_t primaryHash=0;
+    {
+        Arena a(shared(),"FactionMen","FactionMordor");Object *h=a.place("GondorFighterHorde",0,600.0f,600.0f,0.0f);
+        for(int f=0;f<20;++f)a.logic.runLogicFrame();auto *hc=dynamic_cast<HordeContain *>(h->getContain());REQUIRE(hc);
+        XferSave out;hc->xfer(out);state=out.data();StateHasher hash;hc->crc(hash);primaryHash=hash.value();
+    }
+    {
+        Arena b(shared(),"FactionMen","FactionMordor");Object *h=b.place("GondorFighterHorde",0,600.0f,600.0f,0.0f);
+        for(int f=0;f<20;++f)b.logic.runLogicFrame();auto *hc=dynamic_cast<HordeContain *>(h->getContain());REQUIRE(hc);
+        hc=hc->toggleFormation();REQUIRE(hc);REQUIRE(hc->snapshotFormationTemplateName()=="GondorFighterHordeBlock");
+        XferLoad in(state);hc->xfer(in);CHECK(in.atEnd());StateHasher hash;hc->crc(hash);
+        CHECK((hash.value()==primaryHash)==false);
+        XferSave whole;h->xfer(whole);wholeState=whole.data();
+
+    }
+    {
+        Arena c(shared(),"FactionMen","FactionMordor");Object *h=c.place("GondorFighterHorde",0,600.0f,600.0f,0.0f);
+        for(int f=0;f<20;++f)c.logic.runLogicFrame();XferSave before;c.logic.random().xfer(before);
+        XferLoad in(wholeState);h->xfer(in);CHECK(in.atEnd());XferSave after;c.logic.random().xfer(after);
+        CHECK(before.data()==after.data());auto *hc=dynamic_cast<HordeContain *>(h->getContain());REQUIRE(hc);
+        CHECK(hc->snapshotFormationTemplateName()=="GondorFighterHordeBlock");
+    }
+
+}
+
+namespace {
+struct MultiContainWorld : logictest::LogicWorld {
+    MultiContainWorld() {
+        MapHordeSpawn::bindHordeContainData(w.modules);LogicModules::registerAll(w.modules);
+        const std::string err=w.load(
+            "Object Dual\n KindOf = HORDE\n"
+            " Behavior = HordeContain First\n Slots = 0\n AlternateFormation = FirstAlt\n End\n"
+            " Behavior = HordeContain Last\n Slots = 0\n AlternateFormation = LastAlt\n End\nEnd\n"
+            "Object FirstAlt\n KindOf = HORDE\n Behavior = HordeContain FirstSwap\n Slots = 0\n AlternateFormation = Dual\n End\nEnd\n"
+            "Object LastAlt\n KindOf = HORDE\n Behavior = HordeContain LastSwap\n Slots = 0\n AlternateFormation = Dual\n End\nEnd\n");
+        REQUIRE_MESSAGE(err.empty(),err);
+    }
+};
+}
+TEST_CASE("SAVE-FORMATION01 duplicate horde modules preserve default last-wins and actual swapped source") {
+    for(int swaps : {0,1,2}) {
+        INFO("swaps="<<swaps);
+        std::vector<std::uint8_t> bytes;std::string next,tag;std::uint32_t hash=0;
+        {
+            MultiContainWorld a;Object *h=a.make("Dual");auto *hc=dynamic_cast<HordeContain *>(h->getContain());REQUIRE(hc);
+            REQUIRE(hc->getModuleTagName()=="Last");
+            for(int i=0;i<swaps;++i){hc=hc->toggleFormation();REQUIRE(hc);}
+            tag=hc->getModuleTagName();next=hc->alternateFormationTemplate()->getName();StateHasher hasher;h->crc(hasher);hash=hasher.value();
+            XferSave out;h->xfer(out);bytes=out.data();
+        }
+        {
+            MultiContainWorld b;Object *h=b.make("Dual");XferLoad in(bytes);
+            CHECK_NOTHROW(h->xfer(in));
+            auto *hc=dynamic_cast<HordeContain *>(h->getContain());REQUIRE(hc);
+            CHECK(hc->getModuleTagName()==tag);CHECK(hc->alternateFormationTemplate()->getName()==next);
+            StateHasher hasher;h->crc(hasher);CHECK(hasher.value()==hash);
+        }
+    }
 }

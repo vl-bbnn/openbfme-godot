@@ -713,6 +713,11 @@ void HordeContain::containReactToTransformChange()
 void HordeContain::crc(StateHasher &h) const
 {
 	UpdateModule::crc(h);
+	if (!m_snapshotFormationTemplateName.empty())
+	{
+		h.addU32(0x464F524Du); // native formation configuration; unchanged original configurations retain their hash stream
+		h.addString(m_snapshotFormationTemplateName);
+	}
 	h.addBool(m_dirty);
 	h.addBool(m_workDone);
 	h.addBool(m_propagatedMoving);

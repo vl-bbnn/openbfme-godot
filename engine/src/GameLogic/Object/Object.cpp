@@ -2389,11 +2389,12 @@ void Object::setScriptStatus(std::uint8_t bits, bool set)
 // army, ...); this Object is the port's subset, so its own fields follow its crc's order with the state the crc leaves out (the geometry version, the radar
 // frame, the trigger cell, ...). Its modules are retail's loop: a count (u16), then per module its tag name and a block with the module's xfer
 // (RW 0x698775 .. 0x6987A5). OpenBFME is strict where retail skips: the snapshot's modules must be this object's, in its order (S-4191).
-// Not saved, rebuilt: the KindOf mask, the helper count and the module interface caches (the template's, at construction), the client hooks, the list links
+// Not saved, rebuilt: the KindOf mask, the helper count and the module interface caches (construction plus the saved formation's contain), the client hooks, the list links
 // (the Objects block's order) and the team links (the TeamFactory's post-process).
 void Object::xfer(Xfer &x)
 {
-	SnapshotXfer::version(x, 1, 1);
+	// Native version 1 omitted a swapped HordeContain's configuration and cannot recover it safely; retain the original save and use its build/log.
+	SnapshotXfer::version(x, 2, 2);
 	// a load never reads its destination: the save-side values are built from the members only when saving (SAVES.md, rules for xfer authors)
 	const bool saving = !x.isLoading();
 	ObjectID id = saving ? m_id : (ObjectID)INVALID_ID;
@@ -2406,6 +2407,20 @@ void Object::xfer(Xfer &x)
 	{
 		throw XferException("the snapshot's object " + std::to_string(id) + " '" + templateName + "' of team " + std::to_string(team) + " is loaded into object "
 			+ std::to_string(m_id) + " '" + m_template->getName() + "'");
+	}
+	const auto *savedHorde = saving ? dynamic_cast<const HordeContain *>(m_contain) : nullptr;
+	std::string formation = savedHorde ? savedHorde->snapshotFormationTemplateName() : std::string();
+	x.xferAsciiString(&formation);
+	if (x.isLoading())
+	{
+		if (auto *horde = dynamic_cast<HordeContain *>(m_contain))
+		{
+			horde->restoreSnapshotFormation(formation);
+		}
+		else if (!formation.empty())
+		{
+			throw XferException("the snapshot's object " + std::to_string(m_id) + " has a horde formation but no HordeContain");
+		}
 	}
 	// the transform first: setting it runs reactToTransformChange (the trigger areas, the shroud and partition marks), whose effects the fields below overwrite
 	Coord3D pos = saving ? *getPosition() : Coord3D{};

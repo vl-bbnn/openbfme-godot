@@ -21,6 +21,7 @@
 #include "Common/Thing/ModuleFactory.h"
 #include "Common/Thing/ThingFactory.h"
 #include "Common/Thing/ThingTemplate.h"
+#include "Common/Xfer.h"
 #include "GameLogic/Combat/CombatNames.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/GameLogicDispatch.h"
@@ -34,6 +35,7 @@
 #include "GameLogic/Object/Object.h"
 
 #include <algorithm>
+#include <set>
 
 namespace
 {
@@ -54,6 +56,20 @@ const ThingTemplate::Nugget *hordeContainNugget(const ThingTemplate &tt)
 		}
 	}
 	return nullptr;
+}
+
+// Object construction caches the last contain; a formation target above deliberately takes its first HordeContain (RW 0x875FB2).
+const ThingTemplate::Nugget *initialHordeContainNugget(const ThingTemplate &tt)
+{
+	const ThingTemplate::Nugget *last = nullptr;
+	for (const ThingTemplate::Nugget &n : tt.behaviorModules().nuggets())
+	{
+		if (dynamic_cast<const HordeContainBehaviorData *>(n.data.get()))
+		{
+			last = &n;
+		}
+	}
+	return last;
 }
 
 const ThingTemplate *alternateTemplate(GameLogic &logic, const HordeContainModuleData &data)
@@ -123,6 +139,9 @@ HordeContain *HordeContain::toggleFormation()
 	}
 	made.release();
 	std::unique_ptr<BehaviorModule> freshOwned(fresh);
+	const ThingTemplate::Nugget *initial = initialHordeContainNugget(*horde->getTemplate()->getFinalOverride());
+	const bool originalData = initial && initial->data.get() == n->data.get() && initial->name == n->name;
+	fresh->m_snapshotFormationTemplateName = originalData ? std::string() : alt->getName();
 	fresh->onObjectCreated(); // the slot table, as at the alternate object's creation (RW 0x877751)
 	fresh->m_payloadCreated = true;
 	// the members leave the old contain without the "last member gone" destruction; the banner carrier separately
@@ -200,6 +219,58 @@ HordeContain *HordeContain::toggleFormation()
 		// on the members that reached their slots) from the horde and its members (RW 0x6943ED)
 		fresh->setModelConditionForHorde(AIUpdateInterface::modelConditionBit("PORCUPINE"), false);
 	}
+	return fresh;
+}
+
+// OpenBFME native snapshot configuration, not a retail save layout (S-4190).
+// A formation command replaces this module's data while retaining the object's template. Recreate that module before loading its state.
+HordeContain *HordeContain::restoreSnapshotFormation(const std::string &templateName)
+{
+	Object *horde = getObject();
+	GameLogic &logic = horde->logic();
+	const ThingTemplate *source = horde->getTemplate();
+	const ThingTemplate::Nugget *n = initialHordeContainNugget(*source->getFinalOverride());
+	if (!n)
+	{
+		throw XferException("the snapshot's horde '" + source->getName() + "' has no original HordeContain data");
+	}
+	if (!templateName.empty())
+	{
+		// The first edge is the original active contain's; subsequent targets use the same first-nugget rule as toggleFormation.
+		source = alternateTemplate(logic, static_cast<const HordeContainBehaviorData *>(n->data.get())->horde);
+		std::set<std::string> visited;
+		while (source && visited.insert(source->getName()).second && source->getName() != templateName)
+		{
+			n = hordeContainNugget(*source->getFinalOverride());
+			source = n ? alternateTemplate(logic, static_cast<const HordeContainBehaviorData *>(n->data.get())->horde) : nullptr;
+		}
+		if (!source || source->getName() != templateName)
+		{
+			throw XferException("the snapshot's horde formation '" + templateName + "' is not reachable from '" + horde->getTemplate()->getName() + "'");
+		}
+		n = hordeContainNugget(*source->getFinalOverride());
+	}
+	if (!n)
+	{
+		throw XferException("the snapshot's horde formation '" + source->getName() + "' has no HordeContain data");
+	}
+	if (getModuleData() == n->data.get() && getModuleClassName() == n->name)
+	{
+		m_snapshotFormationTemplateName = templateName;
+		return this;
+	}
+	std::unique_ptr<Module> made = logic.modules().newModule(horde, n->name, n->data.get(), MODULETYPE_BEHAVIOR);
+	auto *fresh = dynamic_cast<HordeContain *>(made.get());
+	if (!fresh)
+	{
+		throw XferException("the snapshot's horde formation '" + source->getName() + "' did not make a HordeContain");
+	}
+	fresh->m_snapshotFormationTemplateName = templateName;
+	made.release();
+	UpdateModule *oldUpdate = asUpdateModule();
+	std::unique_ptr<BehaviorModule> old = horde->friend_replaceModule(this, std::unique_ptr<BehaviorModule>(fresh));
+	logic.friend_replaceUpdateModule(oldUpdate, fresh);
+	// No onObjectCreated, payload, modifiers, stance changes or RNG draws: the following module xfer supplies all saved state and slots.
 	return fresh;
 }
 

@@ -376,6 +376,8 @@ public:
 	bool canToggleFormation() const;
 	// RW 0x86C7DE (interface slot 0x58): the next template, not the current formation.
 	const ThingTemplate *alternateFormationTemplate() const;
+	// OpenBFME native snapshot identity of a swapped contain; empty for the original active contain's data and class.
+	const std::string &snapshotFormationTemplateName() const { return m_snapshotFormationTemplateName; }
 	// RW 0x86C7F6 / 0x875FB2 (slots 0x60 / 0x68): the horde object keeps its id, AI, selection and transform and takes the AlternateFormation template's HordeContain;
 	// the members (and the banner carrier) move into it and walk to their new slots. Returns the new contain (this module is gone afterwards), null when nothing happened
 	HordeContain *toggleFormation();
@@ -421,6 +423,10 @@ private:
 	int emotionMemberOrder(Object &member, Object *scarer, Coord3D &pos, float &angle);
 
 	const HordeContainBehaviorData *m_data;
+	std::string m_snapshotFormationTemplateName;
+	// Restore configuration before Object::xfer reads the module's state; never execute a formation command or build random slots here.
+	HordeContain *restoreSnapshotFormation(const std::string &templateName);
+	friend class Object;
 	std::unique_ptr<HordeContainCore> m_core;
 	friend struct XpTestAccess; // lane XP-1 tests: isolated state hash mutations
 	ContainedItemsList m_members;
