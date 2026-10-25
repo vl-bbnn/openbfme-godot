@@ -2106,7 +2106,14 @@ func open_page(key: String) -> bool:
 	var b := command_button(func(x): return x.command == "PUSH_VISIBLE_COMMAND_RANGE" and str(x.name).contains(key) and int(x.state) == 1)
 	if b.is_empty():
 		return false
-	await click(palantir_button(b.frame))
+	# The page can be in the side bar; use the same live button presentation as QA commands.
+	var helper: Node = load("res://scripts/qa_player.gd").new()
+	game.add_child(helper)
+	helper.setup(game, world, hud, game._local_name, {})
+	var pressed: bool = await helper._press(b)
+	helper.queue_free()
+	if not pressed:
+		return false
 	await game._step(6)
 	return true
 
