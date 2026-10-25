@@ -2684,6 +2684,8 @@ Array GameWorld::get_projectiles() const
 			continue;
 		}
 		Dictionary d;
+		d["launcher_id"] = (int64_t)b->projectileGetLauncherID();
+		d["victim_id"] = (int64_t)b->victimID();
 		d["id"] = (int64_t)o->getID();
 		d["template"] = toGodot(o->getTemplate()->getName());
 		const Coord3D &p = *o->getPosition();
