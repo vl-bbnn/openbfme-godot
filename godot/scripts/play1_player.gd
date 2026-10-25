@@ -2533,7 +2533,7 @@ func _tour_expansion(base: Vector2) -> String:
 	return ""
 
 
-## soldiers garrison one of the player's structures: the right click where the cursor says it can be entered
+## soldiers garrison one of the player's structures: the order click for the active mouse scheme where the cursor says it can be entered
 func _tour_garrison(base: Vector2) -> String:
 	# a garrisonable structure being built (the expansion step's) is waited for
 	for i in 120:
@@ -2613,7 +2613,7 @@ func _tour_garrison(base: Vector2) -> String:
 		if not (cur.to_lower().contains("garrison") or cur.to_lower().contains("enter")):
 			continue
 		var n: int = hud.get_message_log().size()
-		await click(px, MOUSE_BUTTON_RIGHT)
+		await click(px, MOUSE_BUTTON_RIGHT if game._alternate_mouse_setup() else MOUSE_BUTTON_LEFT)
 		await game._step(6)
 		var inside := false
 		for i in 240:
