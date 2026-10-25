@@ -2403,61 +2403,18 @@ func _tour_spell(base: Vector2) -> String:
 
 
 ## a worker builds a wall line: its wall button, a legal start and a click further along
-func _tour_wall(base: Vector2) -> String:
+func _tour_wall(_base: Vector2) -> String:
 	var worker := await select_own(func(o): return not o.structure and is_worker(str(o.template)))
 	if worker.is_empty():
-		print("PLAY1 tour wall: the workers %s" % JSON.stringify(own_objects().filter(func(o): return not o.structure and is_worker(str(o.template))).map(func(o): return [o.template, int(o.x), int(o.y), world.get_object(o.id).get("contained_by", 0), world.get_object(o.id).get("dozer_task", "")])))
 		return "no worker could be selected"
 	var b := command_button(func(x): return x.command == "DOZER_CONSTRUCT" and str(x.template).to_lower().contains("wall") and int(x.state) == 1)
 	if b.is_empty():
 		return "n/a: the worker offers no wall (RotWK gives walls to Men, Elves and Dwarves; the fortress's expansions are its walls)"
-	await click(palantir_button(b.frame))
-	await game._step(6)
-	if not hud.get_placement().get("placing", false):
-		return "the wall button did not start the placement"
-	var a := Vector2(-1, -1)
-	var aw := Vector2()
-	for ring in range(3, 8):
-		for k in 12:
-			var p := base + Vector2(cos(TAU * k / 12.0), sin(TAU * k / 12.0)) * 100.0 * ring
-			var px := to_pixel(p.x, p.y)
-			if not on_screen(px):
-				continue
-			await move_to(px)
-			await game._step(2)
-			if int(hud.get_placement().get("legal", -1)) == 0:
-				a = px
-				aw = p
-				break
-		if a.x >= 0:
-			break
-	if a.x < 0:
-		await click(window_size() * 0.5, MOUSE_BUTTON_RIGHT)
-		return "no legal start for the wall on the screen"
-	var before: Array = own_objects().map(func(x): return x.id)
-	var n: int = hud.get_message_log().size()
-	await click(a)
-	await game._step(4)
-	var dir := (aw - base).normalized().orthogonal()
-	var bw := aw + dir * 160.0
-	await move_to(to_pixel(bw.x, bw.y))
-	await game._step(4)
-	shot("tour-wall-line")
-	await click(to_pixel(bw.x, bw.y))
-	await game._step(6)
-	var sent := messages_since(n)
-	var walls: Array = []
-	for i in 60:
-		walls = own_objects().filter(func(o): return not before.has(o.id) and o.structure)
-		if not walls.is_empty():
-			break
-		await game._wait_seconds(0.5)
-	print("PLAY1 tour wall: %s from %s: messages %s, new structures %s" % [b.template, aw, JSON.stringify(sent), JSON.stringify(walls.map(func(o): return o.template))])
+	# A completed hub must issue BeginWallSpan. The existing input scenario also
+	# verifies every preview tile is created and finishes; one hub is not a span.
+	var result: String = await _scenario_qa_wall()
 	shot("tour-wall")
-	if walls.is_empty():
-		return "the wall line placed nothing (messages %s)" % JSON.stringify(sent)
-	return ""
-
+	return result
 
 ## the fortress builds an expansion: its first ready button that is neither a unit nor an upgrade
 func _tour_expansion(base: Vector2) -> String:
