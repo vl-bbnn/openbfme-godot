@@ -1100,6 +1100,9 @@ func _nearest_other_structure(p: Vector2) -> Dictionary:
 ## units ordered long ago that never appeared; upgrades ordered that never completed; sites that never finished
 func _check_production() -> void:
 	var now: int = _world.get_frame()
+	# _survey awaits input between objects; units can appear before it visits again.
+	for o in _own_objects():
+		_produced[o.template] = true
 	for id in _sites.keys():
 		var site: Dictionary = _sites[id]
 		var o: Dictionary = _world.get_object(id)
