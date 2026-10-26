@@ -604,8 +604,15 @@ func play() -> Dictionary:
 			if p.name == _local:
 				_world.give_money(int(p.index), _cash)
 				print("QA TEST HOOK: %s was given %d (--qa-cash: the scripted army grows fast enough to win in a short run)" % [_local, _cash])
+	var player_status: Dictionary = _world.get_player_status_state()
+	var start: Dictionary = _game._report.get("start", {})
+	var roster: Dictionary = enemy_slot_players(_local, int(player_status.get("local_slot", -1)),
+		player_status.get("game", {}).get("slots", []), start.get("slot_players", []))
+	if not player_status.get("ok", false) or not roster.ok:
+		issue("enemy_roster_invalid", _local, str(roster.get("error", "player status unavailable")))
+		return summary()
 	for p in eco.get("players", []):
-		if p.playable and p.name != _local:
+		if p.playable and roster.enemies.has(p.name):
 			var objs: Array = _world.get_player_objects(p.name)
 			for o in objs:
 				if o.commandcenter:
@@ -1513,3 +1520,31 @@ func summary() -> Dictionary:
 			"missing_bones": fx.get("missing_bones", []), "bone_misses": fx.get("bone_misses", 0), "skipped": fx.get("skipped", {})},
 	}
 	return s
+
+
+## GameInfo.h: states2..6 are occupied; SkirmishSides.cpp builds enemies when
+## the local team is -1 or the other slot has a different team. Use the actual
+## logical slot-player mapping, not display names or every nonlocal player.
+static func enemy_slot_players(local: String, local_slot: int, slots: Array, names: Array) -> Dictionary:
+	if slots.size()!=names.size() or local_slot<0 or local_slot>=slots.size():
+		return {"ok":false,"error":"slot/player mapping or local slot missing"}
+	var seen: Dictionary={}
+	for i in slots.size():
+		if not slots[i] is Dictionary or not slots[i].has("state") or not slots[i].has("team") or not names[i] is String:
+			return {"ok":false,"error":"slot state/team/player name missing"}
+		if typeof(slots[i].state)!=TYPE_INT or typeof(slots[i].team)!=TYPE_INT or slots[i].state<0 or slots[i].state>6 or slots[i].team< -1:
+			return {"ok":false,"error":"invalid slot state/team"}
+		var occupied: bool=slots[i].state>=2 and slots[i].state<=6
+		if occupied==str(names[i]).is_empty():
+			return {"ok":false,"error":"occupied slot/player name mismatch"}
+		if not str(names[i]).is_empty():
+			if seen.has(names[i]):return {"ok":false,"error":"duplicate logical player name"}
+			seen[names[i]]=true
+	if str(names[local_slot])!=local or local.is_empty():
+		return {"ok":false,"error":"local slot/player name mismatch"}
+	var enemies: Array=[]
+	var team: int=slots[local_slot].team
+	for i in slots.size():
+		if i!=local_slot and not str(names[i]).is_empty() and (team== -1 or int(slots[i].team)!=team):
+			enemies.append(names[i])
+	return {"ok":true,"enemies":enemies}
