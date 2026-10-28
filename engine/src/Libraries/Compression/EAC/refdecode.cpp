@@ -7,6 +7,7 @@
 #include "Libraries/Compression/EAC/refdecode.h"
 
 #include <cstdio>
+#include <cstring>
 
 namespace
 {
@@ -164,9 +165,17 @@ bool REF_decode(const std::uint8_t *compressed, size_t compressedLen, std::vecto
 				REF_FAIL("output overrun (copy)");
 			}
 			ref = d - dist;
-			while (run--)
+			if (dist == 1)
 			{
-				*d++ = *ref++;
+				std::memset(d, *ref, run);
+				d += run;
+			}
+			else
+			{
+				while (run--)
+				{
+					*d++ = *ref++;
+				}
 			}
 			continue;
 		}
@@ -196,9 +205,17 @@ bool REF_decode(const std::uint8_t *compressed, size_t compressedLen, std::vecto
 				REF_FAIL("output overrun (copy)");
 			}
 			ref = d - dist;
-			while (run--)
+			if (dist == 1)
 			{
-				*d++ = *ref++;
+				std::memset(d, *ref, run);
+				d += run;
+			}
+			else
+			{
+				while (run--)
+				{
+					*d++ = *ref++;
+				}
 			}
 			continue;
 		}
@@ -229,9 +246,17 @@ bool REF_decode(const std::uint8_t *compressed, size_t compressedLen, std::vecto
 				REF_FAIL("output overrun (copy)");
 			}
 			ref = d - dist;
-			while (run--)
+			if (dist == 1)
 			{
-				*d++ = *ref++;
+				std::memset(d, *ref, run);
+				d += run;
+			}
+			else
+			{
+				while (run--)
+				{
+					*d++ = *ref++;
+				}
 			}
 			continue;
 		}

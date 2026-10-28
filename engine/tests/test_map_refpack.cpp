@@ -293,3 +293,39 @@ TEST_CASE("EAR envelope: tag, declared size, and mismatch handling")
 	Bytes tiny = text("EAR");
 	CHECK_FALSE(CompressionManager::isDataCompressed(tiny.data(), tiny.size()));
 }
+
+// Command lengths/distances follow the command table cited at the top of this file.
+// Each expected output is a literal repetition, independent of REF_decode.
+TEST_CASE("RefPack: all byte values repeat at distance one in every command form")
+{
+	for (int value = 0; value < 256; ++value)
+	{
+		for (int form = 0; form < 3; ++form)
+		{
+			for (int boundary = 0; boundary < 2; ++boundary)
+			{
+				const int run = form == 0 ? (boundary ? 10 : 3) : form == 1 ? (boundary ? 67 : 4) : (boundary ? 1028 : 5);
+				Bytes src = header10(run + 1);
+				if (form == 0)
+				{
+					src = cat(src, bytes({ ((run - 3) << 2) | 1, 0, value, 0xFC }));
+				}
+				else if (form == 1)
+				{
+					src = cat(src, bytes({ 0x80 | (run - 4), 0x40, 0, value, 0xFC }));
+				}
+				else
+				{
+					src = cat(src, bytes({ 0xC1 | (((run - 5) >> 8) << 2), 0, 0, (run - 5) & 0xFF, value, 0xFC }));
+				}
+				Bytes out;
+				size_t consumed = 0;
+				std::string error;
+				REQUIRE_MESSAGE(decode(src, out, &error, &consumed), error);
+				CHECK(out == Bytes(run + 1, (std::uint8_t)value));
+				CHECK(consumed == src.size());
+				CHECK(error.empty());
+			}
+		}
+	}
+}
