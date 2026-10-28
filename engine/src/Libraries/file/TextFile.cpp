@@ -15,6 +15,62 @@ namespace
 {
 // RW 0xA15C2A: the scratch copy is min(0x104, remaining) bytes.
 const size_t kIncludeScratchBytes = 0x104;
+
+// Storage only: the target's bounded copy, NUL search, quote trimming and
+// operand rules are shared by the public arbitrary-limit and parser paths.
+bool includeFromScratch(char *scratch, size_t scratchSize, size_t limit, std::string &operand)
+{
+	const char *include = std::strstr(scratch, "#include");
+	if (include == nullptr)
+	{
+		return false;
+	}
+	size_t p = (size_t)(include - scratch) + std::strlen("#include");
+	while (scratch[p] == ' ' || scratch[p] == '\t' || scratch[p] == '"')
+	{
+		++p;
+	}
+
+	auto at_p = [&](size_t k) -> char { return p + k < scratchSize ? scratch[p + k] : '\0'; };
+	size_t run = 0;
+	while (TextFile::charClass((unsigned char)at_p(run)) == 0 && run < limit)
+	{
+		++run;
+	}
+	// walk back from the end of the run, NUL-ing quotes
+	size_t back = run;
+	while (back > 1)
+	{
+		--back;
+		if (at_p(back) != '"')
+		{
+			break;
+		}
+		scratch[p + back] = '\0';
+	}
+	// `dec eax; test eax,eax; jg` : index 0 is never examined
+	operand = std::string(scratch + p);
+	return true;
+}
+
+// Both callers prove limit <= kIncludeScratchBytes. Keep the extra NUL even
+// when limit is zero or one, as the original owning scratch did.
+bool findBoundedInclude(const char *raw, size_t rawSize, size_t limit, std::string &operand)
+{
+	char scratch[kIncludeScratchBytes];
+	size_t count = 0;
+	for (size_t i = 0; i < rawSize && i + 1 < limit; ++i)
+	{
+		const char ch = raw[i];
+		if (ch == '\r' || ch == '\n')
+		{
+			break;
+		}
+		scratch[count++] = ch;
+	}
+	scratch[count++] = '\0';
+	return includeFromScratch(scratch, count, limit, operand);
+}
 }
 
 // RW 0xDEC5A0 (B2 0xA016C9). Built once over all 256 byte values:
@@ -72,6 +128,11 @@ bool TextFile::parseBytes(const std::string &fileName, const std::vector<std::ui
 //   start of the run.
 bool TextFile::findIncludeOperand(const std::string &raw, size_t limit, std::string &operand)
 {
+	if (limit <= kIncludeScratchBytes)
+	{
+		return findBoundedInclude(raw.data(), raw.size(), limit, operand);
+	}
+
 	std::string scratch;
 	scratch.reserve(std::min(raw.size(), limit) + 1);
 	for (size_t i = 0; i < raw.size() && i + 1 < limit; ++i)
@@ -85,37 +146,7 @@ bool TextFile::findIncludeOperand(const std::string &raw, size_t limit, std::str
 	}
 	scratch.push_back('\0');
 
-	const char *include = std::strstr(scratch.c_str(), "#include");
-	if (include == nullptr)
-	{
-		return false;
-	}
-	size_t p = (size_t)(include - scratch.c_str()) + std::strlen("#include");
-	while (scratch[p] == ' ' || scratch[p] == '\t' || scratch[p] == '"')
-	{
-		++p;
-	}
-
-	auto at_p = [&](size_t k) -> char { return p + k < scratch.size() ? scratch[p + k] : '\0'; };
-	size_t run = 0;
-	while (charClass((unsigned char)at_p(run)) == 0 && run < limit)
-	{
-		++run;
-	}
-	// walk back from the end of the run, NUL-ing quotes
-	size_t back = run;
-	while (back > 1)
-	{
-		--back;
-		if (at_p(back) != '"')
-		{
-			break;
-		}
-		scratch[p + back] = '\0';
-	}
-	// `dec eax; test eax,eax; jg` : index 0 is never examined
-	operand = std::string(scratch.c_str() + p);
-	return true;
+	return includeFromScratch(scratch.data(), scratch.size(), limit, operand);
 }
 
 // RW 0xA15AFE-0xA15D42, ported line for line. Variable names follow the disassembly's roles:
@@ -261,9 +292,8 @@ bool TextFile::parseBuffer(const std::string &fileName, const std::vector<std::u
 		}
 
 		const size_t limit = std::min<size_t>(kIncludeScratchBytes, n - startNext);
-		const std::string raw(&buf[(size_t)ptr], std::min(limit, n + 1 - (size_t)ptr));
 		std::string operand;
-		if (findIncludeOperand(raw, limit, operand))
+		if (findBoundedInclude(&buf[(size_t)ptr], std::min(limit, n + 1 - (size_t)ptr), limit, operand))
 		{
 			if (!handleInclude(operand, lineNo, fileIndex, reader, error))
 			{
