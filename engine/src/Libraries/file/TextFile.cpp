@@ -57,6 +57,15 @@ bool includeFromScratch(char *scratch, size_t scratchSize, size_t limit, std::st
 // when limit is zero or one, as the original owning scratch did.
 bool findBoundedInclude(const char *raw, size_t rawSize, size_t limit, std::string &operand)
 {
+	// A missing '#' in the bounded source span proves the scratch copy cannot
+	// contain "#include". A '#' beyond an earlier NUL or line ending only keeps
+	// the original path; its truncation, quote and operand rules stay unchanged.
+	const size_t sourceCount = std::min(rawSize, limit == 0 ? 0 : limit - 1);
+	if (sourceCount == 0 || std::memchr(raw, '#', sourceCount) == nullptr)
+	{
+		return false;
+	}
+
 	char scratch[kIncludeScratchBytes];
 	size_t count = 0;
 	for (size_t i = 0; i < rawSize && i + 1 < limit; ++i)
