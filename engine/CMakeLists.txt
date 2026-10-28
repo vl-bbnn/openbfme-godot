@@ -754,6 +754,7 @@ add_executable(openbfme_tests
     tests/test_asset_catalog_oracle.cpp
     tests/test_w3d_corpus.cpp
     tests/test_map_refpack.cpp
+	tests/test_crc32.cpp
     tests/test_map_chunks.cpp
     tests/test_map_corpus.cpp
     tests/test_map_cache.cpp
