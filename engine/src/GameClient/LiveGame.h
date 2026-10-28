@@ -225,6 +225,9 @@ public:
 	// Switches the logic worker on or off (Options::logicThread); waits for the frames already requested. Only between frames (never on the worker).
 	void setLogicThread(bool enabled);
 	bool logicThread() const { return m_threaded; }
+	// Teardown only, on the owner thread: join the current frame before listeners/playback go.
+	// Drain and close any frame driver first, as in GameWorld; queued frames without a driver end with the game.
+	void stopWorker();
 	// the logic frame the clock has made due (the last one requested of the worker, or run): inputs keyed to logic frames compare against it
 	UnsignedInt dueFrame() const { return m_dueFrame; }
 	// lane RENDERWAIT-1: what every accessor of the live logic calls. Inside the render thread's client window (below) it returns at once: the worker holds
@@ -433,7 +436,6 @@ private:
 	CommandList m_pendingInput;           ///< render thread
 	unsigned long long m_inputHolds = 0;  ///< render thread
 	void workerLoop();
-	void stopWorker();
 	std::unique_ptr<ArchiveW3DFileSource> m_simAssetSource; ///< SMOOTH-1: the simulation's own asset manager (launch bones), apart from the drawables'
 	std::unique_ptr<WW3DAssetManager> m_simAssets;
 	std::unique_ptr<ClientEventRecorder> m_recorder;       ///< the client hooks of the logic (owner thread)

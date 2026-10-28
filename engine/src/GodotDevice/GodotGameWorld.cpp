@@ -503,6 +503,10 @@ GameWorld::~GameWorld()
 	// the game before the world and the assets it points into
 	m_netSession.reset(); // MP-1: the session points at the game
 	releaseLocalDrivers(); // lane MP-2: the recording / replay driver too
+	if (m_game)
+	{
+		m_game->stopWorker(); // recording drained above; join before its audio / FX dependencies go
+	}
 	m_audio.reset(); // AUDIO-2: the audio side reads the game
 	// the game before the world and the assets it points into; the effect player before the game
 	m_liveFX.reset();
@@ -516,6 +520,15 @@ GameWorld::~GameWorld()
 
 void GameWorld::_notification(int what)
 {
+	// Godot reversed PREDELETE invokes the extension before Node deletes children. LiveFX
+	// on the logic worker uses the FXPlayer child, which is already gone by our C++ destructor.
+	if (what == NOTIFICATION_PREDELETE && m_game)
+	{
+		m_netSession.reset();
+		releaseLocalDrivers(); // preserve the recording drain and end record while playback is alive
+		m_game->stopWorker();
+	}
+
 	// lane RENDERWAIT-1: the client window of each render frame opens before any node's process (SceneTree process_frame) and ends when this frame's logic
 	// frames are queued (LiveGame::advance), at the latest before the frame is drawn (RenderingServer frame_pre_draw)
 	if (what == NOTIFICATION_ENTER_TREE)
@@ -684,6 +697,10 @@ void GameWorld::clear_scene()
 	m_netHashFrame = 0;
 	m_netSession.reset(); // MP-1: the session points at the game
 	releaseLocalDrivers(); // lane MP-2: the recording / replay driver too
+	if (m_game)
+	{
+		m_game->stopWorker(); // recording drained above; join before its audio / FX dependencies go
+	}
 	m_audio.reset(); // AUDIO-2: the audio side reads the game
 	m_liveFX.reset(); // lane FX-2: the effect player leaves the logic and the drawables before they go
 	if (m_fxPlayer)
