@@ -38,6 +38,8 @@
 #include "GameEngineDevice/W3DDevice/GameClient/HouseColor.h" // lane HCKEY-1: EntryView::staticKeyPalette
 
 #include <godot_cpp/classes/immediate_mesh.hpp>
+#include <godot_cpp/classes/array_mesh.hpp>
+#include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/ref_counted.hpp>
@@ -681,6 +683,9 @@ private:
 	std::unique_ptr<RetailObjectWorld> m_world;
 	// lane PLAY-3: the castle layouts the placement ghost reads (its own store over the archives: the client never touches the logic's)
 	mutable std::unique_ptr<class CastleTemplateStore> m_ghostCastles;
+	// Keep the prepared BaseMaterial3D shader and matching vertex resources alive until this scene ends.
+	Ref<ArrayMesh> m_preparedPlacementBibMesh;
+	Ref<StandardMaterial3D> m_preparedPlacementBibMaterial;
 	std::unique_ptr<VideoPlayer> m_videos; // lane CAMP-1H: TheVideoPlayer's Video blocks (get_movie)
 	std::string m_videosError;             // lane CAMP-1H: why the Video INIs did not load
 	std::unique_ptr<GameLogicSettings> m_settings;   ///< GameData / AIData / MultiplayerSettings (and the lobby colours), read once by setup()

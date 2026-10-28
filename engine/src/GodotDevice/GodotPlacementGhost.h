@@ -15,6 +15,7 @@
 #pragma once
 
 #include "GameClient/PlacementIcons.h"
+#include "GameClient/PlacementGhost.h"
 
 #include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/node3d.hpp>
@@ -46,6 +47,9 @@ class PlacementGhostRenderer
 public:
 	PlacementGhostRenderer(Node3D *parent, const Ref<RetailFileSystem> &fs);
 	~PlacementGhostRenderer();
+	// The same device resources for actual placement and opt-in startup preparation.
+	// No Object, PlacementIcons update, command or random draw is made here.
+	static MeshInstance3D *createBib(const PlacementGhost::Bib &bib, const Ref<Texture2D> &texture);
 	// one rendered frame: PlacementIcons::update, then the instancers, tints, bibs and the arrow
 	// `judge` false on a frame the logic worker runs (InGameUI's pose only: PlacementIcons::update)
 	void sync(LiveGame &game, const InGameUI &ui, double deltaSeconds, unsigned ghostOptions, bool judge = true);

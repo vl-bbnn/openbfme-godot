@@ -369,6 +369,43 @@ Ref<Texture2D> PlacementGhostRenderer::texture(const std::string &name)
 	return t;
 }
 
+MeshInstance3D *PlacementGhostRenderer::createBib(const PlacementGhost::Bib &bib, const Ref<Texture2D> &texture)
+{
+	ERR_FAIL_COND_V(!bib.valid || texture.is_null(), nullptr);
+	Ref<ArrayMesh> mesh;
+	mesh.instantiate();
+	PackedVector3Array v;
+	PackedVector2Array uv;
+	PackedVector3Array n;
+	// the corners in the drawable's frame, SAGE (x, y) -> Godot (x, -y); uv 0 (x0, y0) (0, 1), 1 (x1, y0) (1, 1), 2 (x1, y1) (1, 0), 3 (x0, y1) (0, 0)
+	const Vector3 c[4] = { Vector3(bib.x0, 0.05f, -bib.y0), Vector3(bib.x1, 0.05f, -bib.y0), Vector3(bib.x1, 0.05f, -bib.y1), Vector3(bib.x0, 0.05f, -bib.y1) };
+	const Vector2 u[4] = { Vector2(0, 1), Vector2(1, 1), Vector2(1, 0), Vector2(0, 0) };
+	for (int k : { 0, 2, 1, 0, 3, 2 })
+	{
+		v.push_back(c[k]);
+		uv.push_back(u[k]);
+		n.push_back(Vector3(0, 1, 0));
+	}
+	Array arrays;
+	arrays.resize(Mesh::ARRAY_MAX);
+	arrays[Mesh::ARRAY_VERTEX] = v;
+	arrays[Mesh::ARRAY_TEX_UV] = uv;
+	arrays[Mesh::ARRAY_NORMAL] = n;
+	mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
+	MeshInstance3D *node = memnew(MeshInstance3D);
+	node->set_mesh(mesh);
+	node->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+	Ref<StandardMaterial3D> m;
+	m.instantiate();
+	m->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
+	m->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA); // ZH W3DBibBuffer: SRCBLEND_SRC_ALPHA, DSTBLEND_ONE_MINUS_SRC_ALPHA, no depth write
+	m->set_depth_draw_mode(BaseMaterial3D::DEPTH_DRAW_DISABLED);
+	m->set_cull_mode(BaseMaterial3D::CULL_DISABLED);
+	node->set_material_override(m);
+	m->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, texture);
+	return node;
+}
+
 void PlacementGhostRenderer::updateBib(PlacementIcons::Icon &icon, IconView &view)
 {
 	// TerrainVisual vslot 0x30 (drawable, highlight, 0.0) / vslot 0x34 (remove), W3DTerrainVisual::addFactionBibDrawable RW 0x49249D
@@ -405,37 +442,9 @@ void PlacementGhostRenderer::updateBib(PlacementIcons::Icon &icon, IconView &vie
 	if (!view.bib)
 	{
 		view.bibTemplate = icon.tt;
-		Ref<ArrayMesh> mesh;
-		mesh.instantiate();
-		PackedVector3Array v;
-		PackedVector2Array uv;
-		PackedVector3Array n;
-		// the corners in the drawable's frame, SAGE (x, y) -> Godot (x, -y); uv 0 (x0, y0) (0, 1), 1 (x1, y0) (1, 1), 2 (x1, y1) (1, 0), 3 (x0, y1) (0, 0)
-		const Vector3 c[4] = { Vector3(bib.x0, 0.05f, -bib.y0), Vector3(bib.x1, 0.05f, -bib.y0), Vector3(bib.x1, 0.05f, -bib.y1), Vector3(bib.x0, 0.05f, -bib.y1) };
-		const Vector2 u[4] = { Vector2(0, 1), Vector2(1, 1), Vector2(1, 0), Vector2(0, 0) };
-		for (int k : { 0, 2, 1, 0, 3, 2 })
-		{
-			v.push_back(c[k]);
-			uv.push_back(u[k]);
-			n.push_back(Vector3(0, 1, 0));
-		}
-		Array arrays;
-		arrays.resize(Mesh::ARRAY_MAX);
-		arrays[Mesh::ARRAY_VERTEX] = v;
-		arrays[Mesh::ARRAY_TEX_UV] = uv;
-		arrays[Mesh::ARRAY_NORMAL] = n;
-		mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
-		view.bib = memnew(MeshInstance3D);
+		view.bib = createBib(bib, t);
 		view.bib->set_name("PlacementBib");
-		view.bib->set_mesh(mesh);
-		view.bib->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
-		Ref<StandardMaterial3D> m;
-		m.instantiate();
-		m->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
-		m->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA); // ZH W3DBibBuffer: SRCBLEND_SRC_ALPHA, DSTBLEND_ONE_MINUS_SRC_ALPHA, no depth write
-		m->set_depth_draw_mode(BaseMaterial3D::DEPTH_DRAW_DISABLED);
-		m->set_cull_mode(BaseMaterial3D::CULL_DISABLED);
-		view.bib->set_material_override(m);
+		view.bibTexture = tex;
 		m_parent->add_child(view.bib);
 		view.bibId = view.bib->get_instance_id();
 	}

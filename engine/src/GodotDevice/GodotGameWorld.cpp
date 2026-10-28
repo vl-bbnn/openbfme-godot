@@ -7,6 +7,8 @@
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include "GodotDevice/GodotGameWorld.h"
+#include "GodotDevice/GodotPlacementGhost.h"
+#include "GodotDevice/GodotW3DModelBuilder.h"
 
 #include "GameClient/FrameCensus.h"
 #include "GameEngineDevice/W3DDevice/GameClient/HouseColor.h"
@@ -713,6 +715,8 @@ void GameWorld::clear_scene()
 	m_game.reset(); // the objects (and through them the drawables) first
 	m_clientRuntime.reset();
 	m_treeTopple.reset(); // lane SPELL-3
+	m_preparedPlacementBibMesh.unref();
+	m_preparedPlacementBibMaterial.unref();
 	m_views.clear();
 	m_dynamicModels.clear();
 	m_staticModels.clear();
@@ -3333,6 +3337,43 @@ Dictionary GameWorld::prepare_initial_models(InitialModelPhase phase)
 			}
 			inst->update_now();
 			for (const String &e : inst->get_errors()) errors.push_back(e);
+			if (!construction)
+			{
+				// The ordinary first placement also draws this generic material. Keep its shader
+				// alive after the temporary probe is freed, just as the W3D shared shader pool does.
+				const PlacementGhost::Bib bib = PlacementGhost::bibOf(*tt);
+				if (!bib.valid)
+				{
+					errors.push_back(toGodot("preview: no bib: " + bib.error));
+					return out;
+				}
+				Ref<W3DModelBuilder> loader;
+				loader.instantiate();
+				const String textureName = String(PlacementGhost::bibTextureFor(1));
+				const Ref<Texture2D> texture = loader->load_texture(m_fs, textureName);
+				if (texture.is_null())
+				{
+					errors.push_back(String("preview: bib texture ") + textureName + ": " + String(Variant(loader->get_report())));
+					return out;
+				}
+				MeshInstance3D *bibNode = PlacementGhostRenderer::createBib(bib, texture);
+				if (!bibNode)
+				{
+					errors.push_back("preview: bib resources could not be created");
+					return out;
+				}
+				bibNode->set_name("PreparedPlacementBib");
+				inst->add_child(bibNode);
+				m_preparedPlacementBibMesh = bibNode->get_mesh();
+				m_preparedPlacementBibMaterial = bibNode->get_material_override();
+				Dictionary preparedBib;
+				preparedBib["texture"] = textureName;
+				preparedBib["mesh_rid"] = (int64_t)m_preparedPlacementBibMesh->get_rid().get_id();
+				preparedBib["material_rid"] = (int64_t)m_preparedPlacementBibMaterial->get_rid().get_id();
+				preparedBib["format"] = (int64_t)m_preparedPlacementBibMesh->surface_get_format(0);
+				out["placement_bib"] = preparedBib;
+			}
+
 			out["node"] = inst;
 			out["template"] = toGodot(tt->getName());
 			out["model"] = toGodot(construction ? models.front().name : look.model);
