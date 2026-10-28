@@ -28,4 +28,9 @@ inline bool lessStrcmp(const std::string &a, const std::string &b) { return a.co
 // AsciiString::compareNoCase : _stricmp ordering (ASCII tolower on both sides).
 int compareNoCase(const std::string &a, const std::string &b);
 
+// Same ASCII fold and prefix ordering for NUL-terminated operands. Avoid owning
+// string conversions in callers that already hold C strings; the length-aware
+// overload above retains its embedded-NUL semantics. Neither operand may be null.
+int compareNoCase(const char *a, const char *b);
+
 } // namespace AsciiStringUtil

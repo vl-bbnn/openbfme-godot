@@ -80,4 +80,18 @@ int compareNoCase(const std::string &a, const std::string &b)
 	return a.size() < b.size() ? -1 : 1;
 }
 
+int compareNoCase(const char *a, const char *b)
+{
+	for (; *a && *b; ++a, ++b)
+	{
+		const unsigned char ca = (unsigned char)lowerChar(*a);
+		const unsigned char cb = (unsigned char)lowerChar(*b);
+		if (ca != cb)
+		{
+			return ca < cb ? -1 : 1;
+		}
+	}
+	return *a ? 1 : (*b ? -1 : 0);
+}
+
 } // namespace AsciiStringUtil

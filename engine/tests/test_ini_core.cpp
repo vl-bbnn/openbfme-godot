@@ -5,6 +5,7 @@
 
 #include "doctest.h"
 #include "IniTestUtil.h"
+#include "Common/AsciiString.h"
 
 #include <cstddef>
 #include <stdexcept>
@@ -428,4 +429,49 @@ TEST_CASE("INI::getNextTokenPreprocess expands a multi-token macro to its full t
 	REQUIRE(loadError(fx.env, "t.ini", "T h\nModifier = INVULNERABLE CREATE_A_HERO_INVULNERABILITY_MODIFIER\n").empty());
 	CHECK(first == "INVULNERABLE");
 	CHECK(second == "ModifierA ModifierB");
+}
+
+
+// The existing length-aware implementation is the independent compatibility
+// oracle for C-string call sites, whose previous implicit conversions copied
+// only bytes before the first NUL. ASCII folding remains the same on high bytes.
+TEST_CASE("ASCII compare: terminated operands preserve every byte pair and prefix ordering")
+{
+	for (int a = 0; a < 256; ++a)
+	{
+		for (int b = 0; b < 256; ++b)
+		{
+			const char lhs[] = { (char)a, 0 };
+			const char rhs[] = { (char)b, 0 };
+			CHECK(AsciiStringUtil::compareNoCase(lhs, rhs) == AsciiStringUtil::compareNoCase(std::string(lhs), std::string(rhs)));
+		}
+	}
+	CHECK(AsciiStringUtil::compareNoCase("", "") == 0);
+	CHECK(AsciiStringUtil::compareNoCase("ABC", "abc") == 0);
+	CHECK(AsciiStringUtil::compareNoCase("abc", "ab") == 1);
+	CHECK(AsciiStringUtil::compareNoCase("ab", "abc") == -1);
+	const std::string lhs("A\0z", 3), rhs("a\0Y", 3);
+	CHECK(AsciiStringUtil::compareNoCase(lhs, rhs) == 1);
+	CHECK(AsciiStringUtil::compareNoCase(lhs.c_str(), rhs.c_str()) == 0);
+	CHECK(AsciiStringUtil::compareNoCase(lhs, rhs.c_str()) == 1);
+	CHECK(AsciiStringUtil::compareNoCase(rhs.c_str(), lhs) == -1);
+}
+
+TEST_CASE("ASCII compare: terminated long operands agree with unchanged owning overload")
+{
+	std::uint32_t rng = 0x41637374u;
+	for (int trial = 0; trial < 4096; ++trial)
+	{
+		std::string a, b;
+		for (int i = 0; i < trial % 513; ++i)
+		{
+			rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+			a.push_back((char)(rng & 255));
+			b.push_back((char)((rng >> 8) & 255));
+		}
+		if (trial % 3 == 0) b = a;
+		if (trial % 3 == 1) b = a.substr(0, a.size() / 2);
+		const std::string oldA(a.c_str()), oldB(b.c_str());
+		CHECK(AsciiStringUtil::compareNoCase(a.c_str(), b.c_str()) == AsciiStringUtil::compareNoCase(oldA, oldB));
+	}
 }
